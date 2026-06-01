@@ -3477,9 +3477,12 @@ function OutboundToDoQueue({ leads, onTriggerResolution, onSelect, push }) {
 
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-400">
                   {lead.phone ? (
-                    <a href={`tel:${lead.phone}`} className="font-mono font-bold text-cyan-300 hover:text-cyan-200 hover:underline transition flex items-center gap-1">
-                      📞 {lead.phone}
-                    </a>
+                    <div className="flex items-center gap-1.5">
+                      <a href={`tel:${lead.phone}`} className="font-mono font-bold text-cyan-300 hover:text-cyan-200 hover:underline transition flex items-center gap-1">
+                        📞 {lead.phone}
+                      </a>
+                      <CopyBtn text={lead.phone} label="Phone" push={push}/>
+                    </div>
                   ) : <span className="italic text-zinc-600">No Phone</span>}
                   {lead.category && <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-extrabold">{lead.category}</span>}
                 </div>
