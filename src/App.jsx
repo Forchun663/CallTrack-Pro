@@ -4,7 +4,7 @@ import {
   ChevronUp, Clock, Copy, Download, Edit3, ExternalLink, Filter, Globe,
   LayoutDashboard, Loader2, LogOut, MapPin, Mic, MicOff, Phone, Plus,
   RotateCcw, Save, Search, Sparkles, Square, Target, Trash2, X, XCircle,
-  Zap, Volume2, FileAudio
+  Zap, Volume2, FileAudio, Mail, Send, Calendar
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
@@ -35,6 +35,7 @@ const EMPTY_LEAD = {
   businessName:"", mapsLink:"", phone:"", address:"", category:"",
   website:"", websiteStatus:"Unknown", status:"not_called", priority:"",
   notes:"", lastContacted:"", nextFollowUp:"", googlePlaceId:"", nextAction:"Call",
+  email:"", demoStatus:"not_sent",
 };
 
 /* ─────────────────────────── HELPERS ─────────────────────────── */
@@ -44,7 +45,43 @@ const todayStr    = () => new Date().toISOString().slice(0, 10);
 const norm        = (v) => String(v || "").trim().toLowerCase();
 const isDue       = (d) => !!d && d <= todayStr();
 
+// Pack email and demoStatus into notes field
+function packNotes(plainNotes, email, demoStatus) {
+  let packed = (plainNotes || "").trim();
+  if (email && email.trim()) {
+    packed += `\n[Email: ${email.trim()}]`;
+  }
+  if (demoStatus && demoStatus !== "not_sent") {
+    packed += `\n[Demo: ${demoStatus}]`;
+  }
+  return packed;
+}
+
+// Unpack email and demoStatus from notes field
+function unpackNotes(packedNotes) {
+  let notes = (packedNotes || "").trim();
+  let email = "";
+  let demoStatus = "not_sent";
+
+  const emailRegex = /\[Email:\s*([^\]]+)\]/i;
+  const emailMatch = notes.match(emailRegex);
+  if (emailMatch) {
+    email = emailMatch[1].trim();
+    notes = notes.replace(emailRegex, "").trim();
+  }
+
+  const demoRegex = /\[Demo:\s*([^\]]+)\]/i;
+  const demoMatch = notes.match(demoRegex);
+  if (demoMatch) {
+    demoStatus = demoMatch[1].trim();
+    notes = notes.replace(demoRegex, "").trim();
+  }
+
+  return { notes, email, demoStatus };
+}
+
 function mapToState(r) {
+  const unpacked = unpackNotes(r.notes);
   return {
     id: r.id,
     businessName:  r.business_name  || "",
@@ -57,7 +94,9 @@ function mapToState(r) {
     websiteStatus: r.website_status  || "Unknown",
     status:        r.status          || "not_called",
     priority:      r.priority        || "",
-    notes:         r.notes           || "",
+    notes:         unpacked.notes,
+    email:         unpacked.email,
+    demoStatus:    unpacked.demoStatus,
     lastContacted: r.last_contacted  || "",
     nextFollowUp:  r.next_follow_up  || "",
     googlePlaceId: r.google_place_id || "",
@@ -174,7 +213,7 @@ export default function App() {
     total:      leads.length,
     notCalled:  leads.filter((l) => l.status === "not_called").length,
     interested: leads.filter((l) => l.status === "interested").length,
-    no:         leads.filter((l) => l.status === "no").length,
+    needsDemo:  leads.filter((l) => l.demoStatus === "needs_demo").length,
     due:        leads.filter((l) => isDue(l.nextFollowUp) && l.status !== "no" && l.status !== "closed").length,
   }), [leads]);
 
@@ -189,12 +228,14 @@ export default function App() {
         if (filter === "call_today")  return isDue(l.nextFollowUp) && l.status !== "no" && l.status !== "closed";
         if (filter === "no_website")  return l.websiteStatus === "No website";
         if (filter === "bad_website") return l.websiteStatus === "Bad website";
+        if (filter === "needs_demo")  return l.demoStatus === "needs_demo";
+        if (filter === "demo_sent")   return l.demoStatus === "sent" || l.status === "demo_sent";
         return l.status === filter;
       })
       .filter((l) => {
         if (!s) return true;
         if (isPhone) return l.phone_normalized?.includes(phoneD);
-        return [l.businessName, l.address, l.category, l.notes].some((f) => norm(f).includes(s));
+        return [l.businessName, l.address, l.category, l.notes, l.email].some((f) => norm(f).includes(s));
       })
       .sort((a, b) => (isDue(b.nextFollowUp) ? 1 : 0) - (isDue(a.nextFollowUp) ? 1 : 0));
   }, [leads, query, filter, dupSearchLead]);
@@ -226,6 +267,7 @@ export default function App() {
     if (!form.businessName.trim()) { setFormError("Business name is required."); return; }
     setFormError(""); setSupaError(""); setSaving(true);
     try {
+      const packedNotesField = packNotes(form.notes, form.email, form.demoStatus);
       const row = {
         user_id:       session.user.id,
         business_name: form.businessName,
@@ -237,7 +279,7 @@ export default function App() {
         website_status:form.websiteStatus,
         status:        form.status,
         priority:      form.priority || null,
-        notes:         form.notes,
+        notes:         packedNotesField,
         last_contacted:form.lastContacted || null,
         next_follow_up:form.nextFollowUp  || null,
         google_place_id:form.googlePlaceId || null,
@@ -297,9 +339,70 @@ export default function App() {
       const updater = (l) => l.id === id ? { ...l, status: newStatus, lastContacted: today } : l;
       setLeads((p) => p.map(updater));
       if (focused?.id === id) setFocused((f) => ({ ...f, status: newStatus, lastContacted: today }));
+      push(`Status updated: ${statusMeta(newStatus).label} ✓`, "success");
     } catch (e) {
       console.error("Status:", e);
       push("Status update failed: " + e.message, "error");
+    }
+  }
+
+  /* ── Change demo status ── */
+  async function changeDemoStatus(id, newDemoStatus) {
+    const lead = leads.find((l) => l.id === id);
+    if (!lead) return;
+    const repackedNotes = packNotes(lead.notes, lead.email, newDemoStatus);
+    try {
+      const { error: e1 } = await supabase.from("leads")
+        .update({ notes: repackedNotes })
+        .eq("id", id).eq("user_id", session.user.id);
+      if (e1) throw e1;
+      
+      const { error: e2 } = await supabase.from("lead_activities").insert([{
+        lead_id: id, user_id: session.user.id,
+        activity_type: "demo_status_change",
+        result: newDemoStatus,
+        notes: `Demo Status → ${newDemoStatus === "needs_demo" ? "Needs Demo" : newDemoStatus === "sent" ? "Demo Sent" : "None"}`,
+      }]);
+      if (e2) throw e2;
+
+      const updater = (l) => l.id === id ? { ...l, notes: lead.notes, demoStatus: newDemoStatus } : l;
+      setLeads((p) => p.map(updater));
+      if (focused?.id === id) setFocused((f) => ({ ...f, notes: lead.notes, demoStatus: newDemoStatus }));
+      push(`Demo status updated ✓`, "success");
+    } catch (e) {
+      console.error("Demo status error:", e);
+      push("Failed to update demo status: " + e.message, "error");
+    }
+  }
+
+  /* ── Quick Follow-up schedule ── */
+  async function changeFollowUp(id, days) {
+    const lead = leads.find((l) => l.id === id);
+    if (!lead) return;
+    const targetDate = new Date();
+    targetDate.setDate(targetDate.getDate() + days);
+    const dateStr = targetDate.toISOString().slice(0, 10);
+    try {
+      const { error: e1 } = await supabase.from("leads")
+        .update({ next_follow_up: dateStr })
+        .eq("id", id).eq("user_id", session.user.id);
+      if (e1) throw e1;
+      
+      const { error: e2 } = await supabase.from("lead_activities").insert([{
+        lead_id: id, user_id: session.user.id,
+        activity_type: "follow_up_scheduled",
+        result: dateStr,
+        notes: `Follow-up scheduled for ${dateStr} (${days} days from now)`,
+      }]);
+      if (e2) throw e2;
+
+      const updater = (l) => l.id === id ? { ...l, nextFollowUp: dateStr } : l;
+      setLeads((p) => p.map(updater));
+      if (focused?.id === id) setFocused((f) => ({ ...f, nextFollowUp: dateStr }));
+      push(`Follow-up scheduled for ${dateStr} ✓`, "success");
+    } catch (e) {
+      console.error("Follow-up error:", e);
+      push("Failed to schedule: " + e.message, "error");
     }
   }
 
@@ -307,12 +410,13 @@ export default function App() {
   const filterBtns = [
     { key:"all",         label:"All" },
     { key:"call_today",  label:"📅 Call Today" },
+    { key:"needs_demo",  label:"📤 Needs Demo" },
+    { key:"demo_sent",   label:"✓ Demo Sent" },
     { key:"not_called",  label:"Not Called" },
     { key:"interested",  label:"Yes ✓" },
     { key:"no",          label:"No ✗" },
     { key:"maybe",       label:"Maybe" },
     { key:"follow_up",   label:"Follow Up" },
-    { key:"demo_sent",   label:"Demo Sent" },
     { key:"no_website",  label:"No Website" },
     { key:"bad_website", label:"Bad Website" },
   ];
@@ -364,9 +468,10 @@ export default function App() {
               <p className="mt-1 text-xs text-zinc-500">{session.user.email} · {leads.length} leads tracked</p>
             </div>
             <div className="flex items-center gap-3">
-              <div className="hidden sm:grid grid-cols-3 gap-2 text-center">
+              <div className="hidden sm:grid grid-cols-4 gap-2 text-center">
                 <MiniStat label="Leads" value={stats.total} />
                 <MiniStat label="Hot" value={stats.interested} accent="text-emerald-400" />
+                <MiniStat label="Needs Demo" value={stats.needsDemo} accent="text-fuchsia-400" />
                 <MiniStat label="Due" value={stats.due} accent={stats.due > 0 ? "text-yellow-400" : undefined} />
               </div>
               <button
@@ -382,11 +487,11 @@ export default function App() {
         {/* ── STATS BAR ── */}
         <div className="mb-5 grid grid-cols-2 gap-2 sm:grid-cols-5">
           {[
-            { key:"all",        label:"Total",       val:stats.total,      icon:<LayoutDashboard size={14}/> },
-            { key:"not_called", label:"Not Called",  val:stats.notCalled,  icon:<Phone size={14}/> },
+            { key:"all",        label:"Total Leads", val:stats.total,      icon:<LayoutDashboard size={14}/> },
+            { key:"needs_demo", label:"Needs Demo",  val:stats.needsDemo,  icon:<Send size={14}/>, accent:"text-fuchsia-400" },
             { key:"interested", label:"Interested",  val:stats.interested, icon:<CheckCircle2 size={14}/>, accent:"text-emerald-400" },
-            { key:"no",         label:"Rejected",    val:stats.no,         icon:<XCircle size={14}/>, accent:"text-red-400" },
             { key:"call_today", label:"Due Today",   val:stats.due,        icon:<CalendarDays size={14}/>, accent:stats.due > 0 ? "text-yellow-400" : undefined },
+            { key:"not_called", label:"Not Called",  val:stats.notCalled,  icon:<Phone size={14}/> },
           ].map(({ key, label, val, icon, accent }) => (
             <button
               key={key}
@@ -433,10 +538,16 @@ export default function App() {
                 <input value={form.businessName} onChange={(e) => upForm("businessName", e.target.value)}
                   placeholder="e.g. Mike's Auto Shop" className={inputCls} />
               </Field>
-              <Field label="Phone Number">
-                <input value={form.phone} onChange={(e) => upForm("phone", e.target.value)}
-                  placeholder="(202) 555-1234" className={inputCls} />
-              </Field>
+              <div className="grid grid-cols-2 gap-2">
+                <Field label="Phone Number">
+                  <input value={form.phone} onChange={(e) => upForm("phone", e.target.value)}
+                    placeholder="(202) 555-1234" className={inputCls} />
+                </Field>
+                <Field label="Contact Email">
+                  <input type="email" value={form.email} onChange={(e) => upForm("email", e.target.value)}
+                    placeholder="name@business.com" className={inputCls} />
+                </Field>
+              </div>
               <Field label="Address">
                 <input value={form.address} onChange={(e) => upForm("address", e.target.value)}
                   placeholder="Street, city, state" className={inputCls} />
@@ -451,6 +562,31 @@ export default function App() {
                 <input value={form.website} onChange={(e) => upForm("website", e.target.value)}
                   placeholder="Leave empty if none" className={inputCls} />
               </Field>
+
+              {/* Demo Website Status Form Section */}
+              <Field label="Demo Website Status">
+                <div className="grid grid-cols-3 gap-1.5 mt-1">
+                  {[
+                    { key: "not_sent", label: "None", cls: "border-zinc-700 bg-black/30 text-zinc-400 hover:text-white" },
+                    { key: "needs_demo", label: "Needs Demo 📤", cls: "border-fuchsia-500/30 bg-fuchsia-500/10 text-fuchsia-300 hover:bg-fuchsia-500/20" },
+                    { key: "sent", label: "Demo Sent ✓", cls: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20" },
+                  ].map((opt) => (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      onClick={() => upForm("demoStatus", opt.key)}
+                      className={`rounded-xl border py-2 text-[10px] font-bold text-center transition active:scale-95 cursor-pointer ${
+                        form.demoStatus === opt.key 
+                          ? "border-white bg-white text-zinc-950 font-black shadow-lg"
+                          : opt.cls
+                      }`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              </Field>
+
               <Field label="Notes">
                 <textarea value={form.notes} onChange={(e) => upForm("notes", e.target.value)}
                   placeholder="Owner name, callback time, details…" rows={3}
@@ -518,7 +654,7 @@ export default function App() {
               <div className="relative mb-3">
                 <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-500" size={16}/>
                 <input value={query} onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Search by name, phone, address, notes…"
+                  placeholder="Search by name, phone, email, category, notes…"
                   className="w-full rounded-2xl border border-white/[0.08] bg-black/30 py-3 pl-11 pr-4 text-xs text-white placeholder:text-zinc-600 outline-none focus:ring-2 ring-cyan-400/30"/>
                 {query && (
                   <button onClick={() => setQuery("")} className="absolute right-3 top-1/2 -translate-y-1/2 rounded-lg p-1 hover:bg-white/10 text-zinc-500 hover:text-white transition">
@@ -577,6 +713,8 @@ export default function App() {
                   <LeadCard
                     key={lead.id} lead={lead}
                     onStatus={changeStatus}
+                    onDemoStatus={changeDemoStatus}
+                    onFollowUp={changeFollowUp}
                     onEdit={editLead}
                     onDelete={deleteLead}
                     onSelect={setFocused}
@@ -598,6 +736,8 @@ export default function App() {
           onEdit={(l) => { editLead(l); setFocused(null); }}
           onDelete={(id) => { deleteLead(id); setFocused(null); }}
           onStatus={changeStatus}
+          onDemoStatus={changeDemoStatus}
+          onFollowUp={changeFollowUp}
           push={push}
         />
       )}
@@ -607,7 +747,7 @@ export default function App() {
 
 /* ═══════════════════════ FOCUS DRAWER ═══════════════════════════ */
 
-function FocusDrawer({ lead, session, onClose, onEdit, onDelete, onStatus, push }) {
+function FocusDrawer({ lead, session, onClose, onEdit, onDelete, onStatus, onDemoStatus, onFollowUp, push }) {
   /* Recording state (local-only, no Supabase storage) */
   const [consent,        setConsent]        = useState(false);
   const [recording,      setRecording]      = useState(false);
@@ -732,6 +872,19 @@ function FocusDrawer({ lead, session, onClose, onEdit, onDelete, onStatus, push 
             <div className="min-w-0">
               <div className="flex flex-wrap gap-1.5 mb-1.5">
                 <span className={`rounded-full border px-2.5 py-0.5 text-[10px] font-black ${meta.soft}`}>{meta.label}</span>
+                
+                {/* Demo status visual indicator */}
+                {lead.demoStatus === "needs_demo" && (
+                  <span className="rounded-full border border-fuchsia-400/30 bg-fuchsia-400/10 px-2.5 py-0.5 text-[10px] font-black text-fuchsia-300 animate-pulse">
+                    📤 Needs Demo
+                  </span>
+                )}
+                {lead.demoStatus === "sent" && (
+                  <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2.5 py-0.5 text-[10px] font-black text-emerald-300">
+                    ✓ Demo Sent
+                  </span>
+                )}
+
                 {lead.nextAction && (
                   <span className="rounded-full border border-cyan-400/20 bg-cyan-400/8 px-2.5 py-0.5 text-[10px] font-bold text-cyan-300">
                     Next: {lead.nextAction}
@@ -782,6 +935,16 @@ function FocusDrawer({ lead, session, onClose, onEdit, onDelete, onStatus, push 
               ) : <Empty>No phone saved</Empty>}
             </ContactRow>
 
+            {/* Email contact row */}
+            <ContactRow icon={<Mail size={14} className="text-cyan-400"/>} label="Email Address">
+              {lead.email ? (
+                <div className="flex items-center gap-2 flex-1 min-w-0">
+                  <a href={`mailto:${lead.email}`} className="text-xs font-bold text-white hover:text-cyan-300 transition truncate flex-1">{lead.email}</a>
+                  <CopyBtn text={lead.email} label="Email" push={push}/>
+                </div>
+              ) : <Empty>No email saved</Empty>}
+            </ContactRow>
+
             <ContactRow icon={<MapPin size={14} className="text-cyan-400"/>} label="Address">
               {lead.address ? (
                 <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -820,25 +983,43 @@ function FocusDrawer({ lead, session, onClose, onEdit, onDelete, onStatus, push 
             )}
           </Section>
 
-          {/* Dates */}
-          {(lead.lastContacted || lead.nextFollowUp) && (
-            <Section title="Timeline">
-              {lead.lastContacted && (
-                <div className="flex items-center gap-2 text-xs text-zinc-400">
-                  <Clock size={13} className="text-zinc-600 shrink-0"/>
-                  Last contacted: <span className="text-white font-bold">{lead.lastContacted}</span>
-                  <span className="text-zinc-600">({relativeDate(lead.lastContacted)})</span>
-                </div>
-              )}
-              {lead.nextFollowUp && (
-                <div className={`flex items-center gap-2 text-xs ${due ? "text-yellow-300 font-bold" : "text-zinc-400"}`}>
-                  <CalendarDays size={13} className={`shrink-0 ${due ? "text-yellow-400" : "text-zinc-600"}`}/>
-                  Follow-up: <span className={due ? "text-yellow-300" : "text-white font-bold"}>{lead.nextFollowUp}</span>
-                  {due && <span className="text-yellow-400">⚡ Due!</span>}
-                </div>
-              )}
-            </Section>
-          )}
+          {/* Dates & Quick Scheduler */}
+          <Section title="Follow-up & Scheduler">
+            {lead.lastContacted && (
+              <div className="flex items-center gap-2 text-xs text-zinc-400">
+                <Clock size={13} className="text-zinc-600 shrink-0"/>
+                Last contacted: <span className="text-white font-bold">{lead.lastContacted}</span>
+                <span className="text-zinc-600">({relativeDate(lead.lastContacted)})</span>
+              </div>
+            )}
+            <div className={`flex items-center gap-2 text-xs ${due ? "text-yellow-300 font-bold" : "text-zinc-400"} pb-1`}>
+              <CalendarDays size={13} className={`shrink-0 ${due ? "text-yellow-400" : "text-zinc-600"}`}/>
+              Follow-up Date: <span className={due ? "text-yellow-300" : "text-white font-bold"}>{lead.nextFollowUp || "Not scheduled"}</span>
+              {due && <span className="text-yellow-400">⚡ Due!</span>}
+            </div>
+
+            {/* Quick scheduler buttons */}
+            <div className="rounded-xl border border-white/[0.05] bg-black/25 p-2.5">
+              <p className="text-[9px] font-black uppercase tracking-widest text-zinc-500 mb-2 flex items-center gap-1">
+                <Calendar size={10}/> Quick Schedule Next Day Planner
+              </p>
+              <div className="grid grid-cols-3 gap-1.5">
+                {[
+                  { days: 1, label: "Tomorrow" },
+                  { days: 3, label: "In 3 Days" },
+                  { days: 7, label: "In 1 Week" },
+                ].map((preset) => (
+                  <button
+                    key={preset.days}
+                    onClick={() => onFollowUp(lead.id, preset.days)}
+                    className="rounded-lg bg-white/[0.06] hover:bg-white/10 px-2 py-2 text-[10px] font-black text-zinc-300 hover:text-white transition active:scale-95 cursor-pointer text-center"
+                  >
+                    + {preset.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </Section>
 
           {/* Notes */}
           {lead.notes && (
@@ -847,13 +1028,36 @@ function FocusDrawer({ lead, session, onClose, onEdit, onDelete, onStatus, push 
             </Section>
           )}
 
+          {/* Demo Website Status Toggles in Drawer */}
+          <Section title="Demo Website Actions">
+            <div className="grid grid-cols-3 gap-2">
+              {[
+                { key: "not_sent", label: "No Demo Tag", cls: "bg-white/[0.06] text-zinc-400 hover:text-white" },
+                { key: "needs_demo", label: "Needs Demo 📤", cls: "bg-fuchsia-500/15 text-fuchsia-300 hover:bg-fuchsia-500/25" },
+                { key: "sent", label: "Demo Sent ✓", cls: "bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25" },
+              ].map((opt) => (
+                <button
+                  key={opt.key}
+                  onClick={() => onDemoStatus(lead.id, opt.key)}
+                  className={`rounded-xl px-2 py-3 text-[10px] font-black text-center transition active:scale-95 cursor-pointer ${
+                    lead.demoStatus === opt.key 
+                      ? "bg-white text-zinc-950 font-black shadow-lg hover:bg-white" 
+                      : opt.cls
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </Section>
+
           {/* Quick status buttons */}
           <Section title="Quick Log Outcome">
             <div className="flex flex-wrap gap-1.5">
               {STATUS_OPTIONS.map((opt) => (
                 <button key={opt.key}
                   onClick={() => onStatus(lead.id, opt.key)}
-                  className={`rounded-xl px-3 py-2 text-[10px] font-black transition hover:scale-105 active:scale-95 ${
+                  className={`rounded-xl px-3 py-2 text-[10px] font-black transition hover:scale-105 active:scale-95 cursor-pointer ${
                     lead.status === opt.key ? `${opt.color} text-white shadow-lg` : "bg-white/[0.06] text-zinc-300 hover:bg-white/10"
                   }`}>
                   {opt.label}
@@ -905,7 +1109,7 @@ function FocusDrawer({ lead, session, onClose, onEdit, onDelete, onStatus, push 
             {/* Recording controls */}
             {!recording && !blob && (
               <button onClick={startRecording} disabled={!consent}
-                className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-red-600 to-rose-500 py-3 text-xs font-black text-white shadow-lg transition hover:scale-[1.01] active:scale-[0.99] disabled:opacity-40 disabled:cursor-not-allowed">
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-red-600 to-rose-500 py-3 text-xs font-black text-white shadow-lg transition hover:scale-[1.01] active:scale-[0.99] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer">
                 <Mic size={14}/> Start Recording
               </button>
             )}
@@ -918,7 +1122,7 @@ function FocusDrawer({ lead, session, onClose, onEdit, onDelete, onStatus, push 
                 </div>
                 <span className="font-mono text-white text-base font-black">{fmtTime(recSecs)}</span>
                 <button onClick={stopRecording}
-                  className="flex items-center gap-1.5 rounded-xl bg-white text-zinc-900 px-3 py-2 text-xs font-black hover:bg-zinc-100 transition active:scale-95">
+                  className="flex items-center gap-1.5 rounded-xl bg-white text-zinc-900 px-3 py-2 text-xs font-black hover:bg-zinc-100 transition active:scale-95 cursor-pointer">
                   <Square size={11}/> Stop
                 </button>
               </div>
@@ -939,11 +1143,11 @@ function FocusDrawer({ lead, session, onClose, onEdit, onDelete, onStatus, push 
                 <audio src={blobUrl} controls className="w-full h-8"/>
                 <div className="flex gap-2">
                   <button onClick={deleteRecording}
-                    className="flex-1 flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.05] py-2.5 text-xs font-bold text-zinc-300 hover:bg-white/10 transition active:scale-95">
+                    className="flex-1 flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.05] py-2.5 text-xs font-bold text-zinc-300 hover:bg-white/10 transition active:scale-95 cursor-pointer">
                     <Trash2 size={12}/> Delete
                   </button>
                   <button onClick={downloadRecording} disabled={savingActivity}
-                    className="flex-1 flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-500 py-2.5 text-xs font-black text-white shadow-md hover:scale-[1.01] active:scale-[0.99] transition disabled:opacity-60">
+                    className="flex-1 flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-500 py-2.5 text-xs font-black text-white shadow-md hover:scale-[1.01] active:scale-[0.99] transition disabled:opacity-60 cursor-pointer">
                     {savingActivity ? <Loader2 className="animate-spin" size={12}/> : <Download size={12}/>}
                     Download .webm
                   </button>
@@ -959,7 +1163,7 @@ function FocusDrawer({ lead, session, onClose, onEdit, onDelete, onStatus, push 
 
 /* ═══════════════════════ LEAD CARD ══════════════════════════════ */
 
-function LeadCard({ lead, onStatus, onEdit, onDelete, onSelect, push }) {
+function LeadCard({ lead, onStatus, onDemoStatus, onFollowUp, onEdit, onDelete, onSelect, push }) {
   const meta = statusMeta(lead.status);
   const due  = isDue(lead.nextFollowUp) && lead.status !== "no" && lead.status !== "closed";
   const mapsUrl = lead.mapsLink || (lead.address ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(lead.address)}` : null);
@@ -986,6 +1190,19 @@ function LeadCard({ lead, onStatus, onEdit, onDelete, onSelect, push }) {
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap gap-1 mb-1.5">
             <span className={`rounded-full border px-2 py-0.5 text-[9px] font-black ${meta.soft}`}>{meta.label}</span>
+            
+            {/* Demo website badges */}
+            {lead.demoStatus === "needs_demo" && (
+              <span className="rounded-full border border-fuchsia-400/30 bg-fuchsia-400/10 px-2 py-0.5 text-[9px] font-black text-fuchsia-300 animate-pulse">
+                ⚡ Needs Demo
+              </span>
+            )}
+            {lead.demoStatus === "sent" && (
+              <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[9px] font-black text-emerald-300">
+                ✓ Demo Sent
+              </span>
+            )}
+
             {lead.nextAction && lead.nextAction !== "Call" && (
               <span className="rounded-full border border-cyan-400/15 bg-cyan-400/8 px-2 py-0.5 text-[9px] font-bold text-cyan-300">{lead.nextAction}</span>
             )}
@@ -1021,7 +1238,20 @@ function LeadCard({ lead, onStatus, onEdit, onDelete, onSelect, push }) {
               <a href={`tel:${lead.phone}`} className="text-xs font-mono text-zinc-300 hover:text-cyan-300 transition truncate">{lead.phone}</a>
             </div>
             <button onClick={(e) => { e.stopPropagation(); copyText(lead.phone, "Phone"); }}
-              className="opacity-0 group-hover/f:opacity-100 rounded-md px-2 py-0.5 text-[9px] font-bold text-zinc-500 hover:text-white hover:bg-white/8 transition">
+              className="opacity-0 group-hover/f:opacity-100 rounded-md px-2 py-0.5 text-[9px] font-bold text-zinc-500 hover:text-white hover:bg-white/8 transition cursor-pointer">
+              Copy
+            </button>
+          </div>
+        )}
+        {/* Render Email if available */}
+        {lead.email && (
+          <div className="flex items-center justify-between group/f">
+            <div className="flex items-center gap-2 min-w-0">
+              <Mail size={11} className="text-zinc-600 shrink-0"/>
+              <a href={`mailto:${lead.email}`} className="text-xs text-zinc-300 hover:text-cyan-300 transition truncate">{lead.email}</a>
+            </div>
+            <button onClick={(e) => { e.stopPropagation(); copyText(lead.email, "Email"); }}
+              className="opacity-0 group-hover/f:opacity-100 rounded-md px-2 py-0.5 text-[9px] font-bold text-zinc-500 hover:text-white hover:bg-white/8 transition cursor-pointer">
               Copy
             </button>
           </div>
@@ -1033,7 +1263,7 @@ function LeadCard({ lead, onStatus, onEdit, onDelete, onSelect, push }) {
               <a href={mapsUrl} target="_blank" rel="noreferrer" className="text-xs text-zinc-300 hover:text-cyan-300 transition truncate">{lead.address}</a>
             </div>
             <button onClick={(e) => { e.stopPropagation(); copyText(lead.address, "Address"); }}
-              className="opacity-0 group-hover/f:opacity-100 rounded-md px-2 py-0.5 text-[9px] font-bold text-zinc-500 hover:text-white hover:bg-white/8 transition">
+              className="opacity-0 group-hover/f:opacity-100 rounded-md px-2 py-0.5 text-[9px] font-bold text-zinc-500 hover:text-white hover:bg-white/8 transition cursor-pointer">
               Copy
             </button>
           </div>
@@ -1050,7 +1280,7 @@ function LeadCard({ lead, onStatus, onEdit, onDelete, onSelect, push }) {
           </div>
           {lead.website && (
             <button onClick={(e) => { e.stopPropagation(); copyText(lead.website, "Website"); }}
-              className="opacity-0 group-hover/f:opacity-100 rounded-md px-2 py-0.5 text-[9px] font-bold text-zinc-500 hover:text-white hover:bg-white/8 transition">
+              className="opacity-0 group-hover/f:opacity-100 rounded-md px-2 py-0.5 text-[9px] font-bold text-zinc-500 hover:text-white hover:bg-white/8 transition cursor-pointer">
               Copy
             </button>
           )}
@@ -1072,24 +1302,51 @@ function LeadCard({ lead, onStatus, onEdit, onDelete, onSelect, push }) {
       {/* Quick actions */}
       <div className="mt-auto pt-3 border-t border-white/[0.05]">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-[9px] font-black uppercase tracking-widest text-zinc-600">Quick Log</span>
-          <button onClick={() => onSelect(lead)} className="text-[9px] font-bold text-cyan-400 hover:text-cyan-300 transition">
+          <span className="text-[9px] font-black uppercase tracking-widest text-zinc-600">Quick Log Outcome</span>
+          <button onClick={() => onSelect(lead)} className="text-[9px] font-bold text-cyan-400 hover:text-cyan-300 transition cursor-pointer">
             Details & Recording →
           </button>
         </div>
-        <div className="flex flex-wrap gap-1">
+        <div className="flex flex-wrap gap-1 mb-2">
           {lead.phone && (
             <a href={`tel:${lead.phone}`}
-              className="rounded-xl bg-cyan-400 text-zinc-900 px-3 py-1.5 text-[10px] font-black hover:bg-cyan-300 active:scale-95 transition flex items-center gap-1">
+              className="rounded-xl bg-cyan-400 text-zinc-900 px-3 py-1.5 text-[10px] font-black hover:bg-cyan-300 active:scale-95 transition flex items-center gap-1 cursor-pointer">
               📞 Call
             </a>
           )}
           {quickActions.map((a) => (
             <button key={a.key} onClick={() => onStatus(lead.id, a.key)}
-              className={`rounded-xl border px-2.5 py-1.5 text-[10px] font-bold active:scale-95 transition ${a.cls} ${lead.status === a.key ? "ring-1 ring-white/20" : ""}`}>
+              className={`rounded-xl border px-2.5 py-1.5 text-[10px] font-bold active:scale-95 transition cursor-pointer ${a.cls} ${lead.status === a.key ? "ring-1 ring-white/20" : ""}`}>
               {a.label}
             </button>
           ))}
+        </div>
+
+        {/* Quick Demo toggle under lead card */}
+        <div className="flex items-center justify-between border-t border-white/[0.04] pt-2">
+          <span className="text-[9px] font-bold text-zinc-600 uppercase">Demo Actions</span>
+          <div className="flex gap-1">
+            <button
+              onClick={() => onDemoStatus(lead.id, lead.demoStatus === "needs_demo" ? "not_sent" : "needs_demo")}
+              className={`rounded-lg px-2 py-1 text-[9px] font-black transition active:scale-95 cursor-pointer ${
+                lead.demoStatus === "needs_demo"
+                  ? "bg-fuchsia-500 text-white font-black"
+                  : "bg-white/[0.04] text-fuchsia-300 hover:bg-fuchsia-500/10 border border-fuchsia-500/20"
+              }`}
+            >
+              Needs Demo 📤
+            </button>
+            <button
+              onClick={() => onDemoStatus(lead.id, lead.demoStatus === "sent" ? "not_sent" : "sent")}
+              className={`rounded-lg px-2 py-1 text-[9px] font-black transition active:scale-95 cursor-pointer ${
+                lead.demoStatus === "sent"
+                  ? "bg-emerald-500 text-white font-black"
+                  : "bg-white/[0.04] text-emerald-300 hover:bg-emerald-500/10 border border-emerald-500/20"
+              }`}
+            >
+              Sent ✓
+            </button>
+          </div>
         </div>
       </div>
     </article>
@@ -1146,12 +1403,12 @@ function AuthScreen() {
                 placeholder="••••••••" className={inputCls}/>
             </Field>
             <button type="submit" disabled={loading}
-              className="w-full flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-500 py-3.5 text-sm font-black text-white shadow-lg hover:scale-[1.01] active:scale-[0.99] transition disabled:opacity-50">
+              className="w-full flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-500 py-3.5 text-sm font-black text-white shadow-lg hover:scale-[1.01] active:scale-[0.99] transition disabled:opacity-50 cursor-pointer">
               {loading ? <Loader2 className="animate-spin" size={16}/> : (isSignUp ? "Create Account" : "Sign In")}
             </button>
           </form>
           <button onClick={() => { setIsSignUp((s) => !s); setError(""); setSuccess(""); }}
-            className="mt-5 w-full text-center text-xs text-zinc-500 hover:text-cyan-400 transition font-medium">
+            className="mt-5 w-full text-center text-xs text-zinc-500 hover:text-cyan-400 transition font-medium cursor-pointer">
             {isSignUp ? "Already have an account? Sign in" : "Don't have an account? Create one"}
           </button>
         </div>
