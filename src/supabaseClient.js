@@ -1,10 +1,15 @@
 import { createClient } from '@supabase/supabase-js'
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY
+// Use fallback placeholder values if VITE_SUPABASE_URL is missing to prevent startup crashes.
+// When placeholders are used, API calls will fail gracefully in try/catch rather than killing the React app.
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || "https://placeholder-vtdekjpgyevulnzhoifh.supabase.co"
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || "placeholderAnonKey"
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.error("Supabase environment variables VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY are missing!")
+if (!import.meta.env.VITE_SUPABASE_URL || !import.meta.env.VITE_SUPABASE_ANON_KEY) {
+  console.warn(
+    "WARNING: Supabase credentials (VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY) are missing in the environment. " +
+    "The app will render in demo/diagnostic mode, but database connections will require valid credentials."
+  );
 }
 
 export const supabase = createClient(supabaseUrl, supabaseAnonKey)
