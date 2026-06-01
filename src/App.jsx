@@ -227,6 +227,21 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, []);
 
+  /* ── Background scroll lock ── */
+  useEffect(() => {
+    const shouldLock = showImportModal || showDuplicateModal || !!focused || !!resolutionLead;
+    if (shouldLock) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "";
+    }
+    return () => {
+      document.body.style.overflow = "";
+    };
+  }, [showImportModal, showDuplicateModal, focused, resolutionLead]);
+
+  /* ── Load leads ── */
+
   /* ── Load leads ── */
   useEffect(() => {
     if (!session) { setLeads([]); return; }
@@ -2009,7 +2024,47 @@ function BulkImportModal({ session, loadedLeads, setLeads, onClose, push }) {
   const [skipDuplicates, setSkipDuplicates] = useState(true);
   const [importing, setImporting] = useState(false);
   const [manuallyRemovedRows, setManuallyRemovedRows] = useState(new Set());
+  
+  const [manualEdits, setManualEdits] = useState({});
+  const [previewFilter, setPreviewFilter] = useState("all"); // "all" | "removed" | "duplicates" | "no_phone"
 
+  const displayedPreviewLeads = useMemo(() => {
+    return leadsToImport.filter((lead) => {
+      const isRemoved = manuallyRemovedRows.has(lead.rowIndex);
+      if (previewFilter === "removed") return isRemoved;
+      if (previewFilter === "duplicates") return !isRemoved && lead.isDuplicate;
+      if (previewFilter === "no_phone") return !isRemoved && lead.hasNoPhone;
+      // "all" tab shows active (non-removed) leads
+      return !isRemoved;
+    });
+  }, [leadsToImport, previewFilter, manuallyRemovedRows]);
+
+  function updateLeadField(rowIndex, field, val) {
+    setManualEdits(prev => {
+      const currentEdits = prev[rowIndex] || {};
+      const newEdits = { ...currentEdits, [field]: val };
+      
+      // Auto-update websiteStatus if website changes
+      if (field === "website") {
+        const lower = val.toLowerCase().trim();
+        if (!lower) {
+          newEdits.websiteStatus = "No website";
+        } else {
+          const socialKeywords = ["instagram.com", "facebook.com", "fb.com", "tiktok.com", "twitter.com", "x.com", "linkedin.com", "youtube.com"];
+          const isSocial = socialKeywords.some(kw => lower.includes(kw));
+          if (isSocial) {
+            newEdits.socialLink = val;
+            newEdits.website = "";
+            newEdits.websiteStatus = "Social media only";
+          } else {
+            newEdits.websiteStatus = "Has website";
+          }
+        }
+      }
+      
+      return { ...prev, [rowIndex]: newEdits };
+    });
+  }
 
   // File upload drag & drop states
   const [dragActive, setDragActive] = useState(false);
@@ -2035,7 +2090,12 @@ function BulkImportModal({ session, loadedLeads, setLeads, onClose, push }) {
     if (gmapsMapping) {
       // Google Maps detected — auto-apply mapping and skip to preview
       setColumnMapping(gmapsMapping);
-      setHasHeaderRow(true);
+      
+      // Determine if there is a header row or if it's raw data
+      const firstCell = String(firstRow[0] || "").toLowerCase().trim();
+      const hasHeader = firstCell.includes("hfpxzc href");
+      setHasHeaderRow(hasHeader);
+      
       setImportStep("preview");
     } else {
       // Generic format — go through mapping step
@@ -2097,17 +2157,33 @@ function BulkImportModal({ session, loadedLeads, setLeads, onClose, push }) {
   const leadsToImport = useMemo(() => {
     if (dataRows.length === 0) return [];
     
+    const isGmaps = parsedRows.length > 0 && !!detectGoogleMapsFormat(parsedRows[0]);
+    
     return dataRows.map((row, rowIndex) => {
-      const lead = {};
+      let lead = {};
       
-      LEAD_FIELDS.forEach(field => {
-        const colIdx = columnMapping[field.key];
-        if (colIdx !== undefined && colIdx !== "") {
-          lead[field.key] = String(row[colIdx] || "").trim();
-        } else {
-          lead[field.key] = "";
-        }
-      });
+      if (isGmaps) {
+        // Smart extractor for Google Maps data row
+        lead.mapsLink = String(row[0] || "").trim();
+        lead.businessName = String(row[1] || "").trim();
+        lead.phone = findPhoneInRow(row);
+        lead.address = findAddressInRow(row);
+        lead.category = String(row[4] || "").trim();
+        lead.notes = findNotesInRow(row);
+        lead.email = "";
+        lead.website = findWebsiteInRow(row);
+        lead.socialLink = "";
+      } else {
+        // Generic mapping
+        LEAD_FIELDS.forEach(field => {
+          const colIdx = columnMapping[field.key];
+          if (colIdx !== undefined && colIdx !== "") {
+            lead[field.key] = String(row[colIdx] || "").trim();
+          } else {
+            lead[field.key] = "";
+          }
+        });
+      }
       
       if (!lead.businessName && !lead.phone) {
         return null; // completely empty line
@@ -2119,9 +2195,18 @@ function BulkImportModal({ session, loadedLeads, setLeads, onClose, push }) {
       }
       
       // Smart category match: try to map Google Maps category to closest CallTrack category
-      const resolvedCategory = lead.category
+      // If category is empty, also try matching based on the business name!
+      let resolvedCategory = lead.category
         ? matchCategory(lead.category) || lead.category
-        : defaultCategory || "Other";
+        : "";
+      
+      if (!resolvedCategory && lead.businessName) {
+        resolvedCategory = matchCategory(lead.businessName) || "";
+      }
+      
+      if (!resolvedCategory) {
+        resolvedCategory = defaultCategory || "Other";
+      }
       lead.category = resolvedCategory;
 
       const phoneClean = lead.phone ? lead.phone.replace(/\D/g, "") : "";
@@ -2146,15 +2231,21 @@ function BulkImportModal({ session, loadedLeads, setLeads, onClose, push }) {
         finalWebsiteStatus = "No website";
       }
 
-      const isDuplicateName = loadedLeads.some(l => norm(l.businessName) === norm(lead.businessName));
+      // Apply manual edits if any
+      const edits = manualEdits[rowIndex] || {};
+      const mergedLead = {
+        ...lead,
+        website: edits.website !== undefined ? edits.website : finalWebsite,
+        socialLink: edits.socialLink !== undefined ? edits.socialLink : finalSocialLink,
+        websiteStatus: edits.websiteStatus !== undefined ? edits.websiteStatus : finalWebsiteStatus,
+      };
+
+      const isDuplicateName = loadedLeads.some(l => norm(l.businessName) === norm(mergedLead.businessName));
       const isDuplicatePhone = phoneClean ? loadedLeads.some(l => l.phone_normalized && l.phone_normalized === phoneClean) : false;
-      const hasNoPhone = !lead.phone || !lead.phone.trim();
+      const hasNoPhone = !mergedLead.phone || !mergedLead.phone.trim();
       
       return {
-        ...lead,
-        website: finalWebsite,
-        socialLink: finalSocialLink,
-        websiteStatus: finalWebsiteStatus,
+        ...mergedLead,
         isDuplicateName,
         isDuplicatePhone,
         isDuplicate: isDuplicateName || isDuplicatePhone,
@@ -2163,7 +2254,7 @@ function BulkImportModal({ session, loadedLeads, setLeads, onClose, push }) {
         rowIndex,
       };
     }).filter(Boolean);
-  }, [dataRows, columnMapping, loadedLeads, hasHeaderRow]);
+  }, [dataRows, columnMapping, loadedLeads, hasHeaderRow, manualEdits, parsedRows, defaultCategory]);
 
 
   // Count leads being skipped vs imported
@@ -2442,34 +2533,39 @@ function BulkImportModal({ session, loadedLeads, setLeads, onClose, push }) {
                 <div className="grid grid-cols-2 sm:grid-cols-5 divide-x divide-white/[0.05]">
                   {[
                     {
+                      key: "all",
                       label: "Total Parsed",
-                      value: leadsToImport.length,
-                      desc: "Rows extracted from your paste",
+                      value: leadsToImport.filter(l => !manuallyRemovedRows.has(l.rowIndex)).length,
+                      desc: "Click to show active rows",
                       color: "text-white",
-                      bg: "",
+                      bg: previewFilter === "all" ? "bg-cyan-500/10 ring-1 ring-cyan-500/20" : "",
                     },
                     {
+                      key: "removed",
                       label: "You Removed",
                       value: manuallyRemovedRows.size,
-                      desc: "Manually excluded by you",
+                      desc: "Click to show removed leads",
                       color: "text-zinc-400",
-                      bg: "",
+                      bg: previewFilter === "removed" ? "bg-zinc-800/40 ring-1 ring-zinc-500/20" : "",
                     },
                     {
+                      key: "duplicates",
                       label: "Duplicates",
                       value: importStats.duplicates,
-                      desc: skipDuplicates ? "Will be skipped" : "Will still import",
+                      desc: skipDuplicates ? "Skipped (Click to view)" : "Will import (Click to view)",
                       color: importStats.duplicates > 0 ? "text-yellow-400" : "text-zinc-500",
-                      bg: importStats.duplicates > 0 ? "bg-yellow-400/5" : "",
+                      bg: previewFilter === "duplicates" ? "bg-yellow-400/10 ring-1 ring-yellow-400/20" : "",
                     },
                     {
+                      key: "no_phone",
                       label: "No Phone",
                       value: importStats.noPhone,
-                      desc: "Missing phone number",
+                      desc: "Click to show missing phones",
                       color: importStats.noPhone > 0 ? "text-orange-400" : "text-zinc-500",
-                      bg: importStats.noPhone > 0 ? "bg-orange-500/5" : "",
+                      bg: previewFilter === "no_phone" ? "bg-orange-500/10 ring-1 ring-orange-500/20" : "",
                     },
                     {
+                      key: "will_import",
                       label: "✓ Will Import",
                       value: importStats.finalCount,
                       desc: "New leads that will be saved",
@@ -2477,11 +2573,19 @@ function BulkImportModal({ session, loadedLeads, setLeads, onClose, push }) {
                       bg: "bg-emerald-400/5",
                     },
                   ].map((stat) => (
-                    <div key={stat.label} className={`px-4 py-4 text-center ${stat.bg}`}>
+                    <button
+                      key={stat.label}
+                      type="button"
+                      disabled={stat.key === "will_import"}
+                      onClick={() => setPreviewFilter(stat.key)}
+                      className={`px-4 py-4 text-center transition active:scale-98 ${stat.bg} ${
+                        stat.key !== "will_import" ? "cursor-pointer hover:bg-white/[0.03]" : ""
+                      }`}
+                    >
                       <div className={`text-2xl font-black ${stat.color}`}>{stat.value}</div>
                       <div className="text-[10px] font-black text-zinc-300 mt-1">{stat.label}</div>
                       <div className="text-[9px] text-zinc-600 mt-0.5 leading-snug">{stat.desc}</div>
-                    </div>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -2576,7 +2680,10 @@ function BulkImportModal({ session, loadedLeads, setLeads, onClose, push }) {
               <div>
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-xs font-black text-zinc-500 uppercase tracking-widest">
-                    Parsed Leads ({leadsToImport.filter(l => !manuallyRemovedRows.has(l.rowIndex)).length} active · {manuallyRemovedRows.size} removed)
+                    {previewFilter === "all" ? `Parsed Leads (${displayedPreviewLeads.length} active · ${manuallyRemovedRows.size} removed)` :
+                     previewFilter === "removed" ? `Removed Leads (${displayedPreviewLeads.length})` :
+                     previewFilter === "duplicates" ? `Duplicate Leads (${displayedPreviewLeads.length})` :
+                     `Leads Missing Phone Number (${displayedPreviewLeads.length})`}
                   </h3>
                   <div className="flex items-center gap-2">
                     {importStats.noPhone > 0 && (
@@ -2598,8 +2705,8 @@ function BulkImportModal({ session, loadedLeads, setLeads, onClose, push }) {
                   </div>
                 </div>
 
-                <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
-                  {leadsToImport.map((lead) => {
+                <div className="space-y-3">
+                  {displayedPreviewLeads.map((lead) => {
                     const isRemoved = manuallyRemovedRows.has(lead.rowIndex);
                     const isSkipped = !isRemoved && skipDuplicates && lead.isDuplicate;
 
@@ -2678,7 +2785,7 @@ function BulkImportModal({ session, loadedLeads, setLeads, onClose, push }) {
 
                         {/* Contact details row */}
                         {!isRemoved && (
-                          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px]">
+                          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] mb-2">
                             {lead.phone ? (
                               <span className="flex items-center gap-1.5 text-zinc-300 font-mono">
                                 <Phone size={10} className="text-cyan-400 shrink-0" />
@@ -2701,12 +2808,6 @@ function BulkImportModal({ session, loadedLeads, setLeads, onClose, push }) {
                                 {lead.email}
                               </span>
                             )}
-                            {lead.website && (
-                              <span className="flex items-center gap-1.5 text-zinc-400">
-                                <Globe size={10} className="text-zinc-500 shrink-0" />
-                                {lead.website}
-                              </span>
-                            )}
                             {lead.mapsLink && (
                               <a
                                 href={lead.mapsLink}
@@ -2717,6 +2818,51 @@ function BulkImportModal({ session, loadedLeads, setLeads, onClose, push }) {
                                 <ExternalLink size={10} className="shrink-0" /> Maps Link
                               </a>
                             )}
+                          </div>
+                        )}
+
+                        {/* Interactive Website URL & Needs Status Editors */}
+                        {!isRemoved && (
+                          <div className="mt-3 pt-3 border-t border-white/[0.04] grid grid-cols-1 sm:grid-cols-2 gap-3 bg-white/[0.01] rounded-xl p-2.5">
+                            <div>
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="text-[9px] text-zinc-400 font-bold uppercase tracking-wider">Website URL</span>
+                                {lead.website && (
+                                  <a
+                                    href={lead.website.startsWith("http") ? lead.website : `https://${lead.website}`}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="text-[9px] text-cyan-400 hover:underline flex items-center gap-0.5"
+                                  >
+                                    Visit Site <ExternalLink size={8} />
+                                  </a>
+                                )}
+                              </div>
+                              <div className="relative">
+                                <Globe className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-500" size={12} />
+                                <input
+                                  type="text"
+                                  value={lead.website}
+                                  onChange={(e) => updateLeadField(lead.rowIndex, "website", e.target.value)}
+                                  placeholder="No website detected (Click to add)"
+                                  className="w-full rounded-lg border border-white/[0.08] bg-black/40 py-1.5 pl-8 pr-2.5 text-xs text-white placeholder:text-zinc-600 outline-none focus:ring-1 focus:ring-cyan-400/30 transition"
+                                />
+                              </div>
+                            </div>
+                            <div>
+                              <span className="block text-[9px] text-zinc-400 font-bold uppercase tracking-wider mb-1">Website Status / Need</span>
+                              <select
+                                value={lead.websiteStatus}
+                                onChange={(e) => updateLeadField(lead.rowIndex, "websiteStatus", e.target.value)}
+                                className="w-full rounded-lg border border-white/[0.08] bg-black/40 py-1.5 px-2.5 text-xs text-white outline-none focus:ring-1 focus:ring-cyan-400/30 transition"
+                              >
+                                <option value="Unknown">❓ Unknown</option>
+                                <option value="No website">🚫 Needs Website (No website)</option>
+                                <option value="Has website">🌐 Has website</option>
+                                <option value="Bad website">⚠️ Bad website (Pitch upgrade)</option>
+                                <option value="Social media only">📱 Social media only (Pitch full site)</option>
+                              </select>
+                            </div>
                           </div>
                         )}
                       </div>
@@ -2899,16 +3045,102 @@ const GOOGLE_MAPS_COLUMNS = {
   notes:        17,  // ah5Ghc (review text)
 };
 
+function findPhoneInRow(row) {
+  const phoneRegex = /(\+?\d{1,2}\s?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/;
+  for (const cell of row) {
+    const text = String(cell || "").trim();
+    if (phoneRegex.test(text) && !text.includes("http") && !text.includes("@")) {
+      return text;
+    }
+  }
+  return "";
+}
+
+function findAddressInRow(row) {
+  const streetRegex = /\b(street|st|avenue|ave|road|rd|place|pl|boulevard|blvd|lane|ln|drive|dr|court|ct|highway|hwy|way|square|sq|terrace|ter|parkway|pkwy)\b/i;
+  
+  // Try high confidence address patterns
+  for (const cell of row) {
+    const text = String(cell || "").trim();
+    if (!text) continue;
+    if (/^\d+/.test(text) && streetRegex.test(text) && !text.includes("http") && !/\d{3}-\d{4}/.test(text)) {
+      return text;
+    }
+  }
+  
+  // Try fallback keyword matching
+  for (const cell of row) {
+    const text = String(cell || "").trim();
+    if (!text) continue;
+    if (streetRegex.test(text) && !text.includes("http") && !text.includes("contractor") && !text.includes("company") && !/\d{3}-\d{4}/.test(text) && text.length > 5 && text.length < 50) {
+      return text;
+    }
+  }
+  return "";
+}
+
+function findWebsiteInRow(row) {
+  for (const cell of row) {
+    const text = String(cell || "").trim();
+    if (!text) continue;
+    
+    // Check for HTTP/HTTPS links (non-Google)
+    if (/^https?:\/\//i.test(text)) {
+      const lower = text.toLowerCase();
+      if (!lower.includes("google.com") && !lower.includes("gstatic.com") && !lower.includes("ggpht.com") && !lower.includes("schema.org") && !lower.includes("w3.org")) {
+        return text;
+      }
+      continue;
+    }
+    
+    // Check for domain name patterns (e.g. ramirezroofing.com)
+    const isDomain = /^[a-z0-9]+([\-\.]{1}[a-z0-9]+)*\.[a-z]{2,6}$/i.test(text);
+    if (isDomain) {
+      const lower = text.toLowerCase();
+      if (!lower.includes("google.com") && !lower.includes("gstatic.com")) {
+        return text;
+      }
+    }
+  }
+  return "";
+}
+
+function findNotesInRow(row) {
+  for (let i = row.length - 1; i >= 0; i--) {
+    const text = String(row[i] || "").trim();
+    if (!text) continue;
+    
+    const lower = text.toLowerCase();
+    if (
+      lower === "directions" || 
+      lower === "delivery" || 
+      lower === "onsite services" || 
+      lower.includes("http") || 
+      lower.includes("@") || 
+      /^\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}$/.test(text)
+    ) {
+      continue;
+    }
+    
+    if ((text.startsWith('"') && text.endsWith('"')) || text.length > 15) {
+      return text.replace(/^"|"$/g, "").trim();
+    }
+  }
+  return "";
+}
+
 function detectGoogleMapsFormat(headerRow) {
   if (!headerRow || headerRow.length === 0) return null;
   
-  // Check for known Google Maps internal header tokens
-  const h = headerRow.map(h => h.toLowerCase().trim());
-  const isGmaps = (
-    h.some(v => v === "hfpxzc href" || v === "qbf1pd" || v === "usdlk" || v === "mw4etd")
-  );
+  // Case A: standard Google Maps header tokens
+  const h = headerRow.map(item => String(item || "").toLowerCase().trim());
+  const isGmapsHeader = h.some(v => v === "hfpxzc href" || v === "qbf1pd" || v === "usdlk" || v === "mw4etd");
   
-  if (!isGmaps) return null;
+  // Case B: Raw copy-paste from Excel/Google Maps data row
+  const firstCell = String(headerRow[0] || "");
+  const isGmapsData = firstCell.includes("google.com/maps/place/") || firstCell.includes("google.com/maps/dir/") || firstCell.includes("google.com/maps/search/");
+  
+  if (!isGmapsHeader && !isGmapsData) return null;
 
   // Build the mapping using known column positions
   const mapping = {};
@@ -3134,107 +3366,170 @@ function DuplicateReviewModal({ session, duplicateGroups, setLeads, onClose, pus
 
 // ── OUTBOUND COLD CALL TO-DO QUEUE ───────────────────────────────────────────
 function OutboundToDoQueue({ leads, onTriggerResolution, onSelect, push }) {
-  const toDoLeads = useMemo(() => {
-    return leads.filter((l) => l.status === "not_called");
+  const lists = useMemo(() => {
+    const today = todayStr();
+    const tomorrow = tomorrowStr();
+    return {
+      cold_calls: leads.filter((l) => l.status === "not_called"),
+      call_later: leads.filter((l) => l.nextFollowUp === today && l.status !== "no" && l.status !== "closed"),
+      tomorrow:   leads.filter((l) => l.nextFollowUp === tomorrow && l.status !== "no" && l.status !== "closed"),
+      due:        leads.filter((l) => isDue(l.nextFollowUp) && l.nextFollowUp !== today && l.status !== "no" && l.status !== "closed"),
+    };
   }, [leads]);
 
-  if (toDoLeads.length === 0) return null;
+  const [activeTab, setActiveTab] = useState("cold_calls");
+
+  // Dynamically focus a tab with active leads if the current one is empty
+  useEffect(() => {
+    if (lists[activeTab] && lists[activeTab].length === 0) {
+      if (lists.cold_calls.length > 0) setActiveTab("cold_calls");
+      else if (lists.due.length > 0) setActiveTab("due");
+      else if (lists.call_later.length > 0) setActiveTab("call_later");
+      else if (lists.tomorrow.length > 0) setActiveTab("tomorrow");
+    }
+  }, [leads, activeTab, lists]);
+
+  const currentList = lists[activeTab] || [];
 
   return (
     <div className="mb-5 rounded-3xl border border-cyan-500/20 bg-cyan-950/5 p-5 shadow-xl backdrop-blur-2xl relative overflow-hidden">
       <div className="absolute top-0 right-0 w-32 h-32 bg-cyan-500/10 rounded-full blur-3xl pointer-events-none" />
       
-      <div className="mb-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      {/* Header and Quick dialer toggle */}
+      <div className="mb-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
         <div>
           <span className="text-[9px] font-black uppercase tracking-[0.2em] text-cyan-400">Campaign Outreach Queue</span>
           <h2 className="text-lg font-black text-white flex items-center gap-2 mt-0.5">
-            ⚡ Cold Call To-Do List
+            ⚡ Outbound Dialer Campaign
           </h2>
-          <p className="text-[10px] text-zinc-500 mt-0.5">Work through your cold leads one by one</p>
+          <p className="text-[10px] text-zinc-500 mt-0.5">Select a category list below to dial prospects</p>
         </div>
         <div className="flex items-center gap-2">
-          {toDoLeads.length > 0 && (
+          {currentList.length > 0 && (
             <button
               onClick={() => {
-                onSelect(toDoLeads[0]);
-                push(`Dialer Assist activated for ${toDoLeads[0].businessName}! ⚡`, "info");
+                onSelect(currentList[0]);
+                push(`Dialer Assist activated for ${currentList[0].businessName}! ⚡`, "info");
               }}
               className="flex items-center gap-1 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-400 hover:to-blue-400 text-white px-3 py-1.5 text-xs font-black transition active:scale-95 shadow-md shadow-cyan-950/40 cursor-pointer"
-              title="Focus and start calling the first lead in the list"
+              title="Focus and start calling the first lead in the active tab queue"
             >
               ⚡ Start Dialer Assist
             </button>
           )}
-          <span className="rounded-full bg-cyan-400/10 border border-cyan-400/20 px-2.5 py-1 text-xs font-black text-cyan-300">
-            {toDoLeads.length} Cold Leads
-          </span>
         </div>
       </div>
 
-      <div className="space-y-2.5 max-h-[310px] overflow-y-auto pr-1">
-        {toDoLeads.map((lead) => (
-          <div key={lead.id} className="rounded-2xl border border-white/[0.05] bg-black/40 p-3.5 hover:border-cyan-500/25 transition duration-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 group">
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2 mb-1.5">
-                <h4 onClick={() => onSelect(lead)} className="text-sm font-black text-white hover:text-cyan-300 transition cursor-pointer truncate flex-1">{lead.businessName}</h4>
-                
-                {lead.websiteStatus && (
-                  <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[8px] font-black uppercase tracking-wider ${
-                    lead.websiteStatus === "No website" ? "border-red-500/30 bg-red-500/10 text-red-400" :
-                    lead.websiteStatus === "Social media only" ? "border-purple-500/30 bg-purple-500/10 text-purple-300" :
-                    "border-zinc-700 bg-zinc-800/30 text-zinc-400"
-                  }`}>
-                    {lead.websiteStatus === "No website" ? "🚫 No Web" :
-                     lead.websiteStatus === "Social media only" ? "📱 Socials" : "✓ Website"}
-                  </span>
-                )}
-              </div>
-
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-400">
-                {lead.phone ? (
-                  <a href={`tel:${lead.phone}`} className="font-mono font-bold text-cyan-300 hover:text-cyan-200 hover:underline transition flex items-center gap-1">
-                    📞 {lead.phone}
-                  </a>
-                ) : <span className="italic text-zinc-600">No Phone</span>}
-                {lead.category && <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-extrabold">{lead.category}</span>}
-              </div>
-            </div>
-
-            <div className="flex items-center gap-1.5 shrink-0">
-              {/* Wants website -> Needs Demo */}
-              <button
-                onClick={() => onTriggerResolution(lead, "interested")}
-                className="rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-zinc-950 px-3 py-2 text-xs font-black shadow-md transition active:scale-95 flex items-center gap-1 cursor-pointer"
-                title="Talked! Wants website. Mark as Interested & flags Needs Demo"
-              >
-                ✓ Demo Needed 📤
-              </button>
-
-              {/* Call back again (X) -> Reschedule Tomorrow */}
-              <button
-                onClick={() => onTriggerResolution(lead, "reschedule", "no_answer")}
-                className="rounded-xl border border-red-500/20 bg-red-500/10 hover:bg-red-500/20 text-red-300 px-3 py-2 text-xs font-black transition active:scale-95 flex items-center gap-0.5 cursor-pointer"
-                title="Didn't answer or call back. Reschedule callback tomorrow"
-              >
-                ✗ Call Tomorrow
-              </button>
-
-              {/* Skip / Not interested */}
-              <button
-                onClick={() => {
-                  if (confirm(`Archive ${lead.businessName}?`)) {
-                    onTriggerResolution(lead, "reschedule", "no");
-                  }
-                }}
-                className="rounded-xl border border-white/5 bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-red-400 p-2 transition active:scale-95 cursor-pointer"
-                title="Not Interested / Archive"
-              >
-                🗑
-              </button>
-            </div>
-          </div>
+      {/* Tab selectors for lists */}
+      <div className="mb-4 flex flex-wrap gap-1.5 border-b border-white/[0.05] pb-3">
+        {[
+          { key: "cold_calls", label: "⚡ Cold Calls", count: lists.cold_calls.length, color: "text-cyan-400 border-cyan-400/20 bg-cyan-400/5" },
+          { key: "due", label: "📅 Due Today", count: lists.due.length, color: "text-yellow-400 border-yellow-400/20 bg-yellow-400/5" },
+          { key: "call_later", label: "⏳ Call Later", count: lists.call_later.length, color: "text-purple-400 border-purple-400/20 bg-purple-400/5" },
+          { key: "tomorrow", label: "📆 Tomorrow", count: lists.tomorrow.length, color: "text-fuchsia-400 border-fuchsia-400/20 bg-fuchsia-400/5" },
+        ].map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
+            className={`flex items-center gap-1.5 rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-wider transition active:scale-95 cursor-pointer ${
+              activeTab === tab.key
+                ? tab.color + " shadow-md"
+                : "border-white/[0.04] bg-white/[0.02] text-zinc-500 hover:text-white"
+            }`}
+          >
+            {tab.label}
+            <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-black ${
+              activeTab === tab.key ? "bg-white/10 text-white" : "bg-zinc-800 text-zinc-500"
+            }`}>
+              {tab.count}
+            </span>
+          </button>
         ))}
       </div>
+
+      {/* Campaign leads list */}
+      {currentList.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-white/[0.05] bg-black/25 p-8 text-center flex flex-col items-center justify-center gap-2">
+          <span className="text-2xl animate-bounce">🎉</span>
+          <p className="text-xs font-black text-zinc-400">All calls in this queue completed!</p>
+          <p className="text-[9px] text-zinc-600">Great job! Toggle other categories or import new leads to continue outreach.</p>
+        </div>
+      ) : (
+        <div className="space-y-2.5 max-h-[310px] overflow-y-auto pr-1">
+          {currentList.map((lead) => (
+            <div key={lead.id} className="rounded-2xl border border-white/[0.05] bg-black/40 p-3.5 hover:border-cyan-500/25 transition duration-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 group">
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <h4 onClick={() => onSelect(lead)} className="text-sm font-black text-white hover:text-cyan-300 transition cursor-pointer truncate flex-1">{lead.businessName}</h4>
+                  
+                  {lead.websiteStatus && (
+                    <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[8px] font-black uppercase tracking-wider ${
+                      lead.websiteStatus === "No website" ? "border-red-500/30 bg-red-500/10 text-red-400" :
+                      lead.websiteStatus === "Social media only" ? "border-purple-500/30 bg-purple-500/10 text-purple-300" :
+                      "border-zinc-700 bg-zinc-800/30 text-zinc-400"
+                    }`}>
+                      {lead.websiteStatus === "No website" ? "🚫 No Web" :
+                       lead.websiteStatus === "Social media only" ? "📱 Socials" : "✓ Website"}
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-zinc-400">
+                  {lead.phone ? (
+                    <a href={`tel:${lead.phone}`} className="font-mono font-bold text-cyan-300 hover:text-cyan-200 hover:underline transition flex items-center gap-1">
+                      📞 {lead.phone}
+                    </a>
+                  ) : <span className="italic text-zinc-600">No Phone</span>}
+                  {lead.category && <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-extrabold">{lead.category}</span>}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5 shrink-0">
+                {/* Wants website -> Needs Demo */}
+                <button
+                  onClick={() => onTriggerResolution(lead, "interested")}
+                  className="rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-zinc-950 px-3 py-2 text-xs font-black shadow-md transition active:scale-95 flex items-center gap-1 cursor-pointer"
+                  title="Talked! Wants website. Mark as Interested & flags Needs Demo"
+                >
+                  ✓ Demo Needed 📤
+                </button>
+
+                {/* Call back again (X) -> Reschedule */}
+                {activeTab === "tomorrow" || activeTab === "call_later" ? (
+                  <button
+                    onClick={() => onTriggerResolution(lead, "reschedule")}
+                    className="rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 text-zinc-300 px-3 py-2 text-xs font-black transition active:scale-95 flex items-center gap-0.5 cursor-pointer"
+                    title="Reschedule this callback"
+                  >
+                    ⏳ Reschedule
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => onTriggerResolution(lead, "reschedule", "no_answer")}
+                    className="rounded-xl border border-red-500/20 bg-red-500/10 hover:bg-red-500/20 text-red-300 px-3 py-2 text-xs font-black transition active:scale-95 flex items-center gap-0.5 cursor-pointer"
+                    title="Didn't answer or call back. Reschedule callback tomorrow"
+                  >
+                    ✗ Call Tomorrow
+                  </button>
+                )}
+
+                {/* Skip / Not interested */}
+                <button
+                  onClick={() => {
+                    if (confirm(`Archive ${lead.businessName}?`)) {
+                      onTriggerResolution(lead, "reschedule", "no");
+                    }
+                  }}
+                  className="rounded-xl border border-white/5 bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-red-400 p-2 transition active:scale-95 cursor-pointer"
+                  title="Not Interested / Archive"
+                >
+                  🗑
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
