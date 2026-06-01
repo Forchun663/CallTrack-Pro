@@ -4,7 +4,7 @@ import {
   ChevronUp, Clock, Copy, Download, Edit3, ExternalLink, Filter, Globe,
   LayoutDashboard, Loader2, LogOut, MapPin, Mic, MicOff, Phone, Plus,
   RotateCcw, Save, Search, Sparkles, Square, Target, Trash2, X, XCircle,
-  Zap, Volume2, FileAudio, Mail, Send, Calendar
+  Zap, Volume2, FileAudio, Mail, Send, Calendar, Play, Pause
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
@@ -211,6 +211,154 @@ export default function App() {
     setResolutionType(type);
     setResolutionPreSelect(preSelect);
   }
+
+  /* Global Audio Recording State */
+  const [recordingLeadId, setRecordingLeadId] = useState(null); // ID of lead currently recording
+  const [recording, setRecording] = useState(false); // boolean isRecording
+  const [recorderRef, setRecorderRef] = useState(null);
+  const [recSecs, setRecSecs] = useState(0);
+  const [recError, setRecError] = useState("");
+  const [consentMap, setConsentMap] = useState({}); // permissions by leadId: { [leadId]: boolean }
+  const [recordingsMap, setRecordingsMap] = useState({}); // { [leadId]: { blob, url, secs } }
+  const [savingActivity, setSavingActivity] = useState(false);
+  const timerRef = useRef(null);
+
+  /* ── Global Recording Handlers ── */
+  async function startRecording(lead) {
+    if (!lead) return;
+    setRecError("");
+    
+    // Clear any previous recording for this lead
+    setRecordingsMap(prev => {
+      const copy = { ...prev };
+      if (copy[lead.id]) {
+        URL.revokeObjectURL(copy[lead.id].url);
+        delete copy[lead.id];
+      }
+      return copy;
+    });
+    setRecSecs(0);
+    setRecordingLeadId(lead.id);
+
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length === 0) {
+        stream.getTracks().forEach((t) => t.stop());
+        setRecError("No audio was detected. Make sure you selected the Google Voice tab and enabled tab audio.");
+        setRecordingLeadId(null);
+        return;
+      }
+      // Drop video tracks immediately — audio only
+      stream.getVideoTracks().forEach((t) => t.stop());
+      const audioStream = new MediaStream(audioTracks);
+      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+        ? "audio/webm;codecs=opus" : "audio/webm";
+      const rec = new MediaRecorder(audioStream, { mimeType });
+      const chunks = [];
+      rec.ondataavailable = (e) => { if (e.data?.size > 0) chunks.push(e.data); };
+      
+      let durationSecs = 0;
+      const intervalId = setInterval(() => {
+        setRecSecs((s) => {
+          durationSecs = s + 1;
+          return durationSecs;
+        });
+      }, 1000);
+      timerRef.current = intervalId;
+
+      rec.onstop = () => {
+        clearInterval(intervalId);
+        const b = new Blob(chunks, { type: "audio/webm" });
+        const url = URL.createObjectURL(b);
+        
+        setRecordingsMap(prev => ({
+          ...prev,
+          [lead.id]: { blob: b, url: url, secs: durationSecs }
+        }));
+        
+        audioStream.getTracks().forEach((t) => t.stop());
+        setRecordingLeadId(null);
+        setRecording(false);
+      };
+      rec.start();
+      setRecorderRef(rec);
+      setRecording(true);
+    } catch (e) {
+      console.error("Recording:", e);
+      setRecError(e.message?.includes("denied") ? "Screen sharing permission was denied." : e.message);
+      setRecordingLeadId(null);
+      setRecording(false);
+    }
+  }
+
+  function stopRecording() {
+    if (recorderRef && recorderRef.state !== "inactive") {
+      recorderRef.stop();
+      clearInterval(timerRef.current);
+      setRecording(false);
+    }
+  }
+
+  function deleteRecording(leadId) {
+    if (recording && recordingLeadId === leadId) {
+      if (recorderRef) recorderRef.stream?.getTracks().forEach((t) => t.stop());
+      clearInterval(timerRef.current);
+      setRecording(false);
+      setRecordingLeadId(null);
+    }
+    
+    setRecordingsMap(prev => {
+      const copy = { ...prev };
+      if (copy[leadId]) {
+        URL.revokeObjectURL(copy[leadId].url);
+        delete copy[leadId];
+      }
+      return copy;
+    });
+    
+    setConsentMap(prev => ({
+      ...prev,
+      [leadId]: false
+    }));
+
+    push("Recording deleted", "info");
+  }
+
+  async function downloadRecording(lead) {
+    const recordingItem = recordingsMap[lead.id];
+    if (!recordingItem || !recordingItem.blob) return;
+    const now      = new Date();
+    const datePart = now.toISOString().slice(0, 10);
+    const timePart = `${String(now.getHours()).padStart(2,"0")}${String(now.getMinutes()).padStart(2,"0")}`;
+    const filename = `${safeName(lead.businessName)}-${safeName(lead.phone) || "nophone"}-${datePart}-${timePart}.webm`;
+    const a = document.createElement("a");
+    a.href = recordingItem.url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    push("Recording downloaded ✓", "success");
+
+    // Log optional activity
+    setSavingActivity(true);
+    try {
+      await supabase.from("lead_activities").insert([{
+        lead_id:       lead.id,
+        user_id:       session.user.id,
+        activity_type: "call_recording_downloaded",
+        result:        "downloaded",
+        notes:         "Recording was downloaded locally and not stored in Supabase.",
+      }]);
+    } catch (e) { console.error("Activity log:", e); }
+    finally { setSavingActivity(false); }
+  }
+
+  useEffect(() => {
+    return () => {
+      clearInterval(timerRef.current);
+      Object.values(recordingsMap).forEach(item => {
+        if (item.url) URL.revokeObjectURL(item.url);
+      });
+    };
+  }, [recordingsMap]);
 
 
 
@@ -1020,6 +1168,18 @@ export default function App() {
               onTriggerResolution={triggerCallResolution}
               onSelect={setFocused}
               push={push}
+              recordingLeadId={recordingLeadId}
+              recording={recording}
+              consentMap={consentMap}
+              setConsentMap={setConsentMap}
+              recordingsMap={recordingsMap}
+              recSecs={recSecs}
+              recError={recError}
+              startRecording={startRecording}
+              stopRecording={stopRecording}
+              deleteRecording={deleteRecording}
+              downloadRecording={downloadRecording}
+              savingActivity={savingActivity}
             />
 
             {/* Search bar + filter */}
@@ -1135,6 +1295,18 @@ export default function App() {
           onFollowUp={changeFollowUp}
           onTriggerResolution={triggerCallResolution}
           push={push}
+          recordingLeadId={recordingLeadId}
+          recording={recording}
+          consentMap={consentMap}
+          setConsentMap={setConsentMap}
+          recordingsMap={recordingsMap}
+          recSecs={recSecs}
+          recError={recError}
+          startRecording={startRecording}
+          stopRecording={stopRecording}
+          deleteRecording={deleteRecording}
+          downloadRecording={downloadRecording}
+          savingActivity={savingActivity}
         />
       )}
 
@@ -1176,17 +1348,41 @@ export default function App() {
 
 /* ═══════════════════════ FOCUS DRAWER ═══════════════════════════ */
 
-function FocusDrawer({ lead, session, onClose, onEdit, onDelete, onStatus, onDemoStatus, onFollowUp, onTriggerResolution, push }) {
-  /* Recording state (local-only, no Supabase storage) */
-  const [consent,        setConsent]        = useState(false);
-  const [recording,      setRecording]      = useState(false);
-  const [recorderRef,    setRecorderRef]    = useState(null);
-  const [blob,           setBlob]           = useState(null);
-  const [blobUrl,        setBlobUrl]        = useState("");
-  const [recSecs,        setRecSecs]        = useState(0);
-  const [recError,       setRecError]       = useState("");
-  const [savingActivity, setSavingActivity] = useState(false);
-  const timerRef = useRef(null);
+function FocusDrawer({
+  lead,
+  session,
+  onClose,
+  onEdit,
+  onDelete,
+  onStatus,
+  onDemoStatus,
+  onFollowUp,
+  onTriggerResolution,
+  push,
+  recordingLeadId,
+  recording: globalRecording,
+  consentMap,
+  setConsentMap,
+  recordingsMap,
+  recSecs: globalRecSecs,
+  recError: globalRecError,
+  startRecording: globalStartRecording,
+  stopRecording,
+  deleteRecording: globalDeleteRecording,
+  downloadRecording: globalDownloadRecording,
+  savingActivity,
+}) {
+  const isThisLeadRecording = globalRecording && recordingLeadId === lead.id;
+  const isAnotherLeadRecording = globalRecording && recordingLeadId !== lead.id;
+
+  const consent = consentMap[lead.id] || false;
+  const setConsent = (val) => setConsentMap((prev) => ({ ...prev, [lead.id]: val }));
+  const blob = recordingsMap[lead.id]?.blob || null;
+  const blobUrl = recordingsMap[lead.id]?.url || "";
+  const recSecs = isThisLeadRecording ? globalRecSecs : (recordingsMap[lead.id]?.secs || 0);
+  const recError = isThisLeadRecording ? globalRecError : "";
+
+  const recording = isThisLeadRecording;
 
   const meta = statusMeta(lead.status);
   const due  = isDue(lead.nextFollowUp) && lead.status !== "no" && lead.status !== "closed";
@@ -1202,90 +1398,18 @@ function FocusDrawer({ lead, session, onClose, onEdit, onDelete, onStatus, onDem
     ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(lead.address)}`
     : null;
 
-  /* ── Recording ── */
-  async function startRecording() {
-    setRecError(""); setBlob(null);
-    if (blobUrl) { URL.revokeObjectURL(blobUrl); setBlobUrl(""); }
-    setRecSecs(0);
-    try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-      const audioTracks = stream.getAudioTracks();
-      if (audioTracks.length === 0) {
-        stream.getTracks().forEach((t) => t.stop());
-        setRecError("No audio was detected. Make sure you selected the Google Voice tab and enabled tab audio.");
-        return;
-      }
-      // Drop video tracks immediately — audio only
-      stream.getVideoTracks().forEach((t) => t.stop());
-      const audioStream = new MediaStream(audioTracks);
-      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-        ? "audio/webm;codecs=opus" : "audio/webm";
-      const rec = new MediaRecorder(audioStream, { mimeType });
-      const chunks = [];
-      rec.ondataavailable = (e) => { if (e.data?.size > 0) chunks.push(e.data); };
-      rec.onstop = () => {
-        const b = new Blob(chunks, { type: "audio/webm" });
-        const url = URL.createObjectURL(b);
-        setBlob(b); setBlobUrl(url);
-        audioStream.getTracks().forEach((t) => t.stop());
-        clearInterval(timerRef.current);
-      };
-      rec.start();
-      setRecorderRef(rec);
-      setRecording(true);
-      timerRef.current = setInterval(() => setRecSecs((s) => s + 1), 1000);
-    } catch (e) {
-      console.error("Recording:", e);
-      setRecError(e.message?.includes("denied") ? "Screen sharing permission was denied." : e.message);
-    }
-  }
-
-  function stopRecording() {
-    if (recorderRef && recorderRef.state !== "inactive") {
-      recorderRef.stop();
-      clearInterval(timerRef.current);
-      setRecording(false);
-    }
+  /* ── Recording Wrapper Handlers ── */
+  function startRecording() {
+    globalStartRecording(lead);
   }
 
   function deleteRecording() {
-    if (recorderRef) recorderRef.stream?.getTracks().forEach((t) => t.stop());
-    setBlob(null);
-    if (blobUrl) { URL.revokeObjectURL(blobUrl); setBlobUrl(""); }
-    setRecSecs(0); setRecording(false); setConsent(false);
-    clearInterval(timerRef.current);
-    push("Recording deleted", "info");
+    globalDeleteRecording(lead.id);
   }
 
-  async function downloadRecording() {
-    if (!blob) return;
-    const now      = new Date();
-    const datePart = now.toISOString().slice(0, 10);
-    const timePart = `${String(now.getHours()).padStart(2,"0")}${String(now.getMinutes()).padStart(2,"0")}`;
-    const filename = `${safeName(lead.businessName)}-${safeName(lead.phone) || "nophone"}-${datePart}-${timePart}.webm`;
-    const a = document.createElement("a");
-    a.href = blobUrl; a.download = filename;
-    document.body.appendChild(a); a.click(); document.body.removeChild(a);
-    push("Recording downloaded ✓", "success");
-
-    // Log optional activity
-    setSavingActivity(true);
-    try {
-      await supabase.from("lead_activities").insert([{
-        lead_id:       lead.id,
-        user_id:       session.user.id,
-        activity_type: "call_recording_downloaded",
-        result:        "downloaded",
-        notes:         "Recording was downloaded locally and not stored in Supabase.",
-      }]);
-    } catch (e) { console.error("Activity log:", e); }
-    finally { setSavingActivity(false); }
+  function downloadRecording() {
+    globalDownloadRecording(lead);
   }
-
-  useEffect(() => () => {
-    clearInterval(timerRef.current);
-    if (blobUrl) URL.revokeObjectURL(blobUrl);
-  }, []);
 
   return (
     <>
@@ -1532,6 +1656,13 @@ function FocusDrawer({ lead, session, onClose, onEdit, onDelete, onStatus, onDem
               Use this to capture audio from your Google Voice tab. Recording stays local — never uploaded.
             </p>
 
+            {isAnotherLeadRecording && (
+              <div className="mb-3 rounded-xl border border-yellow-500/20 bg-yellow-500/5 p-3 text-xs text-yellow-300/90 leading-relaxed flex items-start gap-2.5">
+                <AlertTriangle className="text-yellow-400 shrink-0 mt-0.5" size={14} />
+                <span>A call recording is currently active for another prospect. Please stop that recording first.</span>
+              </div>
+            )}
+
             {recError && <Alert type="warn" msg={recError}/>}
 
             {/* Step-by-step instructions when not recording */}
@@ -1548,18 +1679,19 @@ function FocusDrawer({ lead, session, onClose, onEdit, onDelete, onStatus, onDem
               <div className="rounded-xl border border-white/[0.06] bg-black/25 p-3 mb-3 space-y-2.5">
                 <label className="flex items-start gap-2.5 cursor-pointer select-none">
                   <input type="checkbox" checked={consent} onChange={(e) => setConsent(e.target.checked)}
-                    disabled={recording}
+                    disabled={recording || isAnotherLeadRecording}
                     className="mt-0.5 w-3.5 h-3.5 rounded border-white/20 bg-black text-cyan-400 cursor-pointer disabled:opacity-40"/>
                   <span className="text-xs text-zinc-300 leading-snug">I have permission or legal right to record this call.</span>
                 </label>
                 <div className="flex items-center justify-between border-t border-white/[0.05] pt-2">
                   <span className="text-[10px] text-zinc-600">Ask consent verbally first:</span>
                   <button
+                    disabled={isAnotherLeadRecording}
                     onClick={() => {
                       navigator.clipboard.writeText("Just so you know, I may record this call for notes and follow-up. Is that okay?");
                       push("Consent script copied", "success");
                     }}
-                    className="flex items-center gap-1 text-[10px] font-bold text-cyan-400 hover:text-cyan-300 transition cursor-pointer">
+                    className="flex items-center gap-1 text-[10px] font-bold text-cyan-400 hover:text-cyan-300 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed">
                     📋 Copy Script
                   </button>
                 </div>
@@ -1568,7 +1700,7 @@ function FocusDrawer({ lead, session, onClose, onEdit, onDelete, onStatus, onDem
 
             {/* Recording controls */}
             {!recording && !blob && (
-              <button onClick={startRecording} disabled={!consent}
+              <button onClick={startRecording} disabled={!consent || isAnotherLeadRecording}
                 className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-red-600 to-rose-500 py-3 text-xs font-black text-white shadow-lg transition hover:scale-[1.01] active:scale-[0.99] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer">
                 <Mic size={14}/> Start Recording
               </button>
@@ -1993,6 +2125,185 @@ function CopyBtn({ text, label, push }) {
       className={`shrink-0 rounded-lg p-1.5 transition ${copied ? "bg-emerald-500/15 text-emerald-400" : "bg-white/[0.05] text-zinc-500 hover:bg-white/10 hover:text-white"}`}>
       <Copy size={11}/>
     </button>
+  );
+}
+
+function InlineRecorderController({
+  lead,
+  recordingLeadId,
+  recording,
+  recordingBlob,
+  recordingBlobUrl,
+  recSecs,
+  recError,
+  consent,
+  setConsent,
+  startRecording,
+  stopRecording,
+  deleteRecording,
+  downloadRecording,
+  savingActivity,
+  push,
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  // If this specific lead is actively recording
+  const isThisLeadRecording = recording && recordingLeadId === lead.id;
+  // If another lead is currently recording
+  const isAnotherLeadRecording = recording && recordingLeadId !== lead.id;
+
+  // Render when recording is in progress for THIS lead
+  if (isThisLeadRecording) {
+    return (
+      <div className="flex items-center gap-1.5 rounded-lg bg-red-500/10 border border-red-500/20 px-2 py-1 text-[10px] text-red-400 animate-pulse shrink-0">
+        <span className="h-1.5 w-1.5 rounded-full bg-red-500 animate-ping shrink-0"/>
+        <span className="font-extrabold uppercase text-[9px] tracking-wider">REC</span>
+        <span className="font-mono text-white font-bold">{fmtTime(recSecs)}</span>
+        <button
+          type="button"
+          onClick={stopRecording}
+          className="rounded bg-white text-zinc-950 px-1.5 py-0.5 text-[9px] font-extrabold uppercase transition hover:bg-zinc-100 cursor-pointer active:scale-95 shrink-0"
+        >
+          Stop
+        </button>
+      </div>
+    );
+  }
+
+  // Render when a recording is ready for THIS lead
+  if (recordingBlob) {
+    return (
+      <div className="flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-lg px-2 py-1 shrink-0 animate-[fadeIn_0.2s_ease]">
+        <FileAudio size={12} className="text-emerald-400 shrink-0"/>
+        <span className="text-[10px] text-emerald-400 font-bold font-mono shrink-0">
+          {fmtTime(recSecs)}
+        </span>
+        
+        {/* Playback Preview option */}
+        {recordingBlobUrl && (
+          <audio src={recordingBlobUrl} className="hidden" id={`inline-audio-${lead.id}`} />
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            const aud = document.getElementById(`inline-audio-${lead.id}`);
+            if (aud) {
+              if (aud.paused) {
+                // Pause all other audio elements first
+                document.querySelectorAll("audio").forEach((el) => {
+                  if (el !== aud) el.pause();
+                });
+                aud.play();
+                push("Playing recording preview", "info");
+              } else {
+                aud.pause();
+              }
+            }
+          }}
+          className="rounded bg-emerald-500/10 hover:bg-emerald-500/25 text-emerald-400 p-1 transition cursor-pointer active:scale-95 shrink-0"
+          title="Play preview"
+        >
+          <Volume2 size={10}/>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => downloadRecording(lead)}
+          disabled={savingActivity}
+          className="rounded bg-emerald-500/10 hover:bg-emerald-500/25 text-emerald-400 p-1 transition cursor-pointer active:scale-95 shrink-0"
+          title="Download recording"
+        >
+          <Download size={10}/>
+        </button>
+        <button
+          type="button"
+          onClick={() => deleteRecording(lead.id)}
+          className="rounded bg-red-500/10 hover:bg-red-500/20 text-red-400 p-1 transition cursor-pointer active:scale-95 shrink-0"
+          title="Delete recording"
+        >
+          <Trash2 size={10}/>
+        </button>
+      </div>
+    );
+  }
+
+  // Default: Record setup button + expanded panel
+  return (
+    <div className="relative flex flex-col items-start shrink-0">
+      <button
+        type="button"
+        disabled={isAnotherLeadRecording}
+        onClick={() => setExpanded(!expanded)}
+        title={isAnotherLeadRecording ? "Another recording is currently active" : expanded ? "Close recording setup" : "Start call recording"}
+        className={`shrink-0 rounded-lg p-1.5 transition ${
+          isAnotherLeadRecording 
+            ? "bg-white/[0.01] text-zinc-700 cursor-not-allowed opacity-30" 
+            : expanded
+            ? "bg-red-500/20 text-red-400"
+            : "bg-white/[0.05] text-zinc-500 hover:bg-white/10 hover:text-white"
+        }`}
+      >
+        <Mic size={11}/>
+      </button>
+
+      {/* Expanded Consent Panel */}
+      {expanded && !isAnotherLeadRecording && (
+        <>
+          {/* Invisible backdrop to close the tiny panel on clicking outside */}
+          <div className="fixed inset-0 z-30" onClick={() => setExpanded(false)} />
+          
+          <div className="absolute top-7 left-0 z-40 w-52 rounded-xl border border-red-500/20 bg-[#0c071e] p-3 shadow-xl space-y-2.5 animate-[slideUp_0.15s_ease]">
+            <div className="flex items-center justify-between pb-1 border-b border-white/[0.04]">
+              <span className="text-[9px] font-black uppercase tracking-widest text-red-400">Record Call</span>
+              <button onClick={() => setExpanded(false)} className="text-zinc-500 hover:text-white">
+                <X size={10}/>
+              </button>
+            </div>
+            
+            {recError && (
+              <p className="text-[8px] text-red-400 leading-normal bg-red-500/5 p-1.5 rounded-lg border border-red-500/10">
+                {recError}
+              </p>
+            )}
+
+            <label className="flex items-start gap-2 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={consent}
+                onChange={(e) => setConsent(e.target.checked)}
+                className="mt-0.5 w-3 h-3 rounded border-white/20 bg-black text-red-500 cursor-pointer"
+              />
+              <span className="text-[9px] text-zinc-300 leading-snug">I have the permission/legal right to record.</span>
+            </label>
+
+            <div className="flex items-center justify-between pt-1.5 border-t border-white/[0.04] gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard.writeText("Just so you know, I may record this call for notes and follow-up. Is that okay?");
+                  push("Consent script copied", "success");
+                }}
+                className="text-[9px] font-extrabold text-zinc-400 hover:text-cyan-300 transition flex items-center gap-0.5 cursor-pointer"
+              >
+                📋 Copy Script
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  startRecording(lead);
+                  setExpanded(false);
+                }}
+                disabled={!consent}
+                className="rounded-lg bg-red-600 hover:bg-red-500 text-white px-2.5 py-1 text-[9px] font-black tracking-wider uppercase transition active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1 cursor-pointer"
+              >
+                <Mic size={9}/> Start
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -3366,7 +3677,24 @@ function DuplicateReviewModal({ session, duplicateGroups, setLeads, onClose, pus
 
 
 // ── OUTBOUND COLD CALL TO-DO QUEUE ───────────────────────────────────────────
-function OutboundToDoQueue({ leads, onTriggerResolution, onSelect, push }) {
+function OutboundToDoQueue({
+  leads,
+  onTriggerResolution,
+  onSelect,
+  push,
+  recordingLeadId,
+  recording,
+  consentMap,
+  setConsentMap,
+  recordingsMap,
+  recSecs,
+  recError,
+  startRecording,
+  stopRecording,
+  deleteRecording,
+  downloadRecording,
+  savingActivity,
+}) {
   const lists = useMemo(() => {
     const today = todayStr();
     const tomorrow = tomorrowStr();
@@ -3482,6 +3810,23 @@ function OutboundToDoQueue({ leads, onTriggerResolution, onSelect, push }) {
                         📞 {lead.phone}
                       </a>
                       <CopyBtn text={lead.phone} label="Phone" push={push}/>
+                      <InlineRecorderController
+                        lead={lead}
+                        recordingLeadId={recordingLeadId}
+                        recording={recording}
+                        recordingBlob={recordingsMap[lead.id]?.blob}
+                        recordingBlobUrl={recordingsMap[lead.id]?.url}
+                        recSecs={recordingLeadId === lead.id ? recSecs : recordingsMap[lead.id]?.secs || 0}
+                        recError={recordingLeadId === lead.id ? recError : ""}
+                        consent={consentMap[lead.id] || false}
+                        setConsent={(val) => setConsentMap(prev => ({ ...prev, [lead.id]: val }))}
+                        startRecording={startRecording}
+                        stopRecording={stopRecording}
+                        deleteRecording={deleteRecording}
+                        downloadRecording={downloadRecording}
+                        savingActivity={savingActivity}
+                        push={push}
+                      />
                     </div>
                   ) : <span className="italic text-zinc-600">No Phone</span>}
                   {lead.category && <span className="text-[10px] text-zinc-500 uppercase tracking-widest font-extrabold">{lead.category}</span>}
