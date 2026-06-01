@@ -45,8 +45,8 @@ const todayStr    = () => new Date().toISOString().slice(0, 10);
 const norm        = (v) => String(v || "").trim().toLowerCase();
 const isDue       = (d) => !!d && d <= todayStr();
 
-// Pack email and demoStatus into notes field
-function packNotes(plainNotes, email, demoStatus) {
+// Pack email, demoStatus, and nextAction into notes field
+function packNotes(plainNotes, email, demoStatus, nextAction) {
   let packed = (plainNotes || "").trim();
   if (email && email.trim()) {
     packed += `\n[Email: ${email.trim()}]`;
@@ -54,14 +54,18 @@ function packNotes(plainNotes, email, demoStatus) {
   if (demoStatus && demoStatus !== "not_sent") {
     packed += `\n[Demo: ${demoStatus}]`;
   }
+  if (nextAction && nextAction !== "Call") {
+    packed += `\n[NextAction: ${nextAction}]`;
+  }
   return packed;
 }
 
-// Unpack email and demoStatus from notes field
+// Unpack email, demoStatus, and nextAction from notes field
 function unpackNotes(packedNotes) {
   let notes = (packedNotes || "").trim();
   let email = "";
   let demoStatus = "not_sent";
+  let nextAction = "Call";
 
   const emailRegex = /\[Email:\s*([^\]]+)\]/i;
   const emailMatch = notes.match(emailRegex);
@@ -77,7 +81,14 @@ function unpackNotes(packedNotes) {
     notes = notes.replace(demoRegex, "").trim();
   }
 
-  return { notes, email, demoStatus };
+  const nextActionRegex = /\[NextAction:\s*([^\]]+)\]/i;
+  const nextActionMatch = notes.match(nextActionRegex);
+  if (nextActionMatch) {
+    nextAction = nextActionMatch[1].trim();
+    notes = notes.replace(nextActionRegex, "").trim();
+  }
+
+  return { notes, email, demoStatus, nextAction };
 }
 
 function mapToState(r) {
@@ -100,7 +111,7 @@ function mapToState(r) {
     lastContacted: r.last_contacted  || "",
     nextFollowUp:  r.next_follow_up  || "",
     googlePlaceId: r.google_place_id || "",
-    nextAction:    r.next_action     || "Call",
+    nextAction:    unpacked.nextAction,
     createdAt:     r.created_at      || "",
   };
 }
@@ -267,7 +278,8 @@ export default function App() {
     if (!form.businessName.trim()) { setFormError("Business name is required."); return; }
     setFormError(""); setSupaError(""); setSaving(true);
     try {
-      const packedNotesField = packNotes(form.notes, form.email, form.demoStatus);
+      // nextAction is packed into notes to avoid schema dependency on next_action column
+      const packedNotesField = packNotes(form.notes, form.email, form.demoStatus, form.nextAction);
       const row = {
         user_id:       session.user.id,
         business_name: form.businessName,
@@ -283,7 +295,6 @@ export default function App() {
         last_contacted:form.lastContacted || null,
         next_follow_up:form.nextFollowUp  || null,
         google_place_id:form.googlePlaceId || null,
-        next_action:   form.nextAction || "Call",
       };
       if (editingId) {
         const { error } = await supabase.from("leads").update(row).eq("id", editingId).eq("user_id", session.user.id);
@@ -350,7 +361,7 @@ export default function App() {
   async function changeDemoStatus(id, newDemoStatus) {
     const lead = leads.find((l) => l.id === id);
     if (!lead) return;
-    const repackedNotes = packNotes(lead.notes, lead.email, newDemoStatus);
+    const repackedNotes = packNotes(lead.notes, lead.email, newDemoStatus, lead.nextAction);
     try {
       const { error: e1 } = await supabase.from("leads")
         .update({ notes: repackedNotes })
@@ -1301,7 +1312,7 @@ function LeadCard({ lead, onStatus, onDemoStatus, onFollowUp, onEdit, onDelete, 
       {/* Notes preview */}
       {lead.notes && (
         <p className="mb-3 rounded-xl border border-white/[0.05] bg-black/20 px-3 py-2 text-[10px] text-zinc-400 line-clamp-2 italic">
-          "{lead.notes}"
+          &ldquo;{lead.notes}&rdquo;
         </p>
       )}
 
