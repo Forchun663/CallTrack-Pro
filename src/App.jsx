@@ -553,10 +553,16 @@ export default function App() {
                   placeholder="Street, city, state" className={inputCls} />
               </Field>
               <Field label="Business Category">
-                <select value={form.category} onChange={(e) => upForm("category", e.target.value)} className={inputCls}>
-                  <option value="" className="bg-zinc-950">Select category…</option>
-                  {CATEGORIES.map((c) => <option key={c} value={c} className="bg-zinc-950">{c}</option>)}
-                </select>
+                <input 
+                  list="categories-list"
+                  value={form.category} 
+                  onChange={(e) => upForm("category", e.target.value)} 
+                  placeholder="Type or select a category..." 
+                  className={inputCls} 
+                />
+                <datalist id="categories-list">
+                  {CATEGORIES.map((c) => <option key={c} value={c} />)}
+                </datalist>
               </Field>
               <Field label="Current Website">
                 <input value={form.website} onChange={(e) => upForm("website", e.target.value)}
