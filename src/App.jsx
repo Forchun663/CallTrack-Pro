@@ -1364,25 +1364,23 @@ function LeadCard({ lead, onStatus, onDemoStatus, onFollowUp, onEdit, onDelete, 
 function AuthScreen() {
   const [email,    setEmail]    = useState("");
   const [password, setPassword] = useState("");
-  const [isSignUp, setIsSignUp] = useState(false);
   const [loading,  setLoading]  = useState(false);
   const [error,    setError]    = useState("");
-  const [success,  setSuccess]  = useState("");
 
   async function submit(e) {
     e.preventDefault();
     if (!email || !password) { setError("Please fill in both fields."); return; }
-    setError(""); setSuccess(""); setLoading(true);
+    setError(""); setLoading(true);
     try {
-      if (isSignUp) {
-        const { error } = await supabase.auth.signUp({ email, password });
-        if (error) throw error;
-        setSuccess("Account created! You can now sign in.");
-      } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+    } catch (e) { 
+      let msg = e.message;
+      if (msg.includes("Invalid login credentials")) {
+        msg = "Invalid email or password. If you just created this account in the Supabase Dashboard, make sure you confirmed the email or unchecked 'Send invite email'!";
       }
-    } catch (e) { setError(e.message); }
+      setError(msg); 
+    }
     finally { setLoading(false); }
   }
 
@@ -1395,10 +1393,9 @@ function AuthScreen() {
           <div className="text-center mb-8">
             <p className="text-[10px] font-black uppercase tracking-[0.3em] text-cyan-400 mb-2">Sales Portal</p>
             <h1 className="text-3xl font-black bg-gradient-to-r from-white to-cyan-200 bg-clip-text text-transparent">CallTrack Pro</h1>
-            <p className="text-xs text-zinc-500 mt-2">{isSignUp ? "Create your account" : "Sign in to your workspace"}</p>
+            <p className="text-xs text-zinc-500 mt-2">Sign in to your workspace</p>
           </div>
-          {error   && <Alert type="error"   msg={error}/>}
-          {success && <Alert type="success" msg={success}/>}
+          {error && <Alert type="error" msg={error}/>}
           <form onSubmit={submit} className="space-y-4">
             <Field label="Email">
               <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)}
@@ -1410,13 +1407,15 @@ function AuthScreen() {
             </Field>
             <button type="submit" disabled={loading}
               className="w-full flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-500 py-3.5 text-sm font-black text-white shadow-lg hover:scale-[1.01] active:scale-[0.99] transition disabled:opacity-50 cursor-pointer">
-              {loading ? <Loader2 className="animate-spin" size={16}/> : (isSignUp ? "Create Account" : "Sign In")}
+              {loading ? <Loader2 className="animate-spin" size={16}/> : "Sign In"}
             </button>
           </form>
-          <button onClick={() => { setIsSignUp((s) => !s); setError(""); setSuccess(""); }}
-            className="mt-5 w-full text-center text-xs text-zinc-500 hover:text-cyan-400 transition font-medium cursor-pointer">
-            {isSignUp ? "Already have an account? Sign in" : "Don't have an account? Create one"}
-          </button>
+          <div className="mt-6 border-t border-white/[0.05] pt-4 text-center">
+            <p className="text-[10px] text-zinc-500 leading-relaxed">
+              🔐 <strong>Registration Disabled</strong><br />
+              Account creation is managed securely. Authorized users must be added directly from the Supabase Authentication Dashboard.
+            </p>
+          </div>
         </div>
       </div>
     </div>
