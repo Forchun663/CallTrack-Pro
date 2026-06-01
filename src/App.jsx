@@ -2028,16 +2028,7 @@ function BulkImportModal({ session, loadedLeads, setLeads, onClose, push }) {
   const [manualEdits, setManualEdits] = useState({});
   const [previewFilter, setPreviewFilter] = useState("all"); // "all" | "removed" | "duplicates" | "no_phone"
 
-  const displayedPreviewLeads = useMemo(() => {
-    return leadsToImport.filter((lead) => {
-      const isRemoved = manuallyRemovedRows.has(lead.rowIndex);
-      if (previewFilter === "removed") return isRemoved;
-      if (previewFilter === "duplicates") return !isRemoved && lead.isDuplicate;
-      if (previewFilter === "no_phone") return !isRemoved && lead.hasNoPhone;
-      // "all" tab shows active (non-removed) leads
-      return !isRemoved;
-    });
-  }, [leadsToImport, previewFilter, manuallyRemovedRows]);
+
 
   function updateLeadField(rowIndex, field, val) {
     setManualEdits(prev => {
@@ -2256,6 +2247,16 @@ function BulkImportModal({ session, loadedLeads, setLeads, onClose, push }) {
     }).filter(Boolean);
   }, [dataRows, columnMapping, loadedLeads, hasHeaderRow, manualEdits, parsedRows, defaultCategory]);
 
+  const displayedPreviewLeads = useMemo(() => {
+    return leadsToImport.filter((lead) => {
+      const isRemoved = manuallyRemovedRows.has(lead.rowIndex);
+      if (previewFilter === "removed") return isRemoved;
+      if (previewFilter === "duplicates") return !isRemoved && lead.isDuplicate;
+      if (previewFilter === "no_phone") return !isRemoved && lead.hasNoPhone;
+      // "all" tab shows active (non-removed) leads
+      return !isRemoved;
+    });
+  }, [leadsToImport, previewFilter, manuallyRemovedRows]);
 
   // Count leads being skipped vs imported
   const importStats = useMemo(() => {
