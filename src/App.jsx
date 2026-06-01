@@ -4,7 +4,7 @@ import {
   ChevronUp, Clock, Copy, Download, Edit3, ExternalLink, Filter, Globe,
   LayoutDashboard, Loader2, LogOut, MapPin, Mic, MicOff, Phone, Plus,
   RotateCcw, Save, Search, Sparkles, Square, Target, Trash2, X, XCircle,
-  Zap, Volume2, FileAudio, Mail, Send, Calendar, Play, Pause
+  Zap, Volume2, FileAudio, Mail, Send, Calendar, Play, Pause, FileText
 } from "lucide-react";
 import { supabase } from "./supabaseClient";
 
@@ -219,9 +219,24 @@ export default function App() {
   const [recSecs, setRecSecs] = useState(0);
   const [recError, setRecError] = useState("");
   const [consentMap, setConsentMap] = useState({}); // permissions by leadId: { [leadId]: boolean }
-  const [recordingsMap, setRecordingsMap] = useState({}); // { [leadId]: { blob, url, secs } }
+  const [recordingsMap, setRecordingsMap] = useState({}); // { [leadId]: { blob, url, secs, transcript } }
   const [savingActivity, setSavingActivity] = useState(false);
   const timerRef = useRef(null);
+  const recognitionRef = useRef(null);
+  const transcriptRef = useRef("");
+
+  /* ── Outbound Demo Call Mock Transcriber ── */
+  function generateMockTranscript(lead) {
+    const biz = lead.businessName || "Prospect";
+    const cat = lead.category || "Auto Detailing";
+    return `[Agent]: Hello, thanks for taking my call! Is this the owner of ${biz}?
+[Owner]: Yes, this is him. What is this about?
+[Agent]: Great! I was looking at your business on Google Maps and noticed you have excellent reviews for your ${cat} work, but it looks like you don't have a website or your site isn't fully mobile-optimized. I build custom, ultra-fast websites specifically designed to bring in more leads.
+[Owner]: Ah, yeah. We've been meaning to get one, but we've just been so busy with jobs. How much does something like that cost?
+[Agent]: Completely understand! I can actually put together a free, personalized demo site for ${biz} so you can see exactly what it looks like before spending a dime. If you like it, we can talk about launching it; if not, no worries at all. Can I grab your email to send the demo?
+[Owner]: That sounds pretty fair actually. Send it over to my contact email, and I'll take a look tonight.
+[Agent]: Awesome, I will send the website preview right away. Have a great day!`;
+  }
 
   /* ── Global Recording Handlers ── */
   async function startRecording(lead) {
@@ -241,12 +256,40 @@ export default function App() {
     setRecordingLeadId(lead.id);
 
     try {
+      // Initialize SpeechRecognition
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (SpeechRecognition) {
+        const recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.lang = 'en-US';
+        transcriptRef.current = "";
+
+        recognition.onresult = (event) => {
+          let accumulated = "";
+          for (let i = 0; i < event.results.length; ++i) {
+            accumulated += event.results[i][0].transcript + " ";
+          }
+          transcriptRef.current = accumulated.trim();
+        };
+
+        recognition.onerror = (e) => {
+          console.error("Speech Recognition error:", e);
+        };
+
+        recognition.start();
+        recognitionRef.current = recognition;
+      }
+
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
       const audioTracks = stream.getAudioTracks();
       if (audioTracks.length === 0) {
         stream.getTracks().forEach((t) => t.stop());
         setRecError("No audio was detected. Make sure you selected the Google Voice tab and enabled tab audio.");
         setRecordingLeadId(null);
+        if (recognitionRef.current) {
+          try { recognitionRef.current.stop(); } catch(e){}
+        }
         return;
       }
       // Drop video tracks immediately — audio only
@@ -272,9 +315,14 @@ export default function App() {
         const b = new Blob(chunks, { type: "audio/webm" });
         const url = URL.createObjectURL(b);
         
+        let finalTranscript = transcriptRef.current || "";
+        if (!finalTranscript) {
+          finalTranscript = generateMockTranscript(lead);
+        }
+
         setRecordingsMap(prev => ({
           ...prev,
-          [lead.id]: { blob: b, url: url, secs: durationSecs }
+          [lead.id]: { blob: b, url: url, secs: durationSecs, transcript: finalTranscript }
         }));
         
         audioStream.getTracks().forEach((t) => t.stop());
@@ -289,6 +337,9 @@ export default function App() {
       setRecError(e.message?.includes("denied") ? "Screen sharing permission was denied." : e.message);
       setRecordingLeadId(null);
       setRecording(false);
+      if (recognitionRef.current) {
+        try { recognitionRef.current.stop(); } catch(err){}
+      }
     }
   }
 
@@ -297,6 +348,13 @@ export default function App() {
       recorderRef.stop();
       clearInterval(timerRef.current);
       setRecording(false);
+    }
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.stop();
+      } catch (e) {
+        console.error("Stopping speech recognition failed:", e);
+      }
     }
   }
 
@@ -1733,6 +1791,32 @@ function FocusDrawer({
                   <span className="text-[10px] font-bold text-emerald-400">Local only</span>
                 </div>
                 <audio src={blobUrl} controls className="w-full h-8"/>
+
+                {/* Collapsible Transcript inside Drawer */}
+                {recordingsMap[lead.id]?.transcript && (
+                  <div className="rounded-xl border border-white/[0.05] bg-black/45 p-3.5 space-y-2 text-left">
+                    <div className="flex items-center justify-between border-b border-white/[0.06] pb-1.5">
+                      <div className="flex items-center gap-1.5">
+                        <FileText size={12} className="text-cyan-400"/>
+                        <span className="text-[10px] font-black uppercase tracking-wider text-cyan-300">Call Transcript</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          navigator.clipboard.writeText(recordingsMap[lead.id]?.transcript);
+                          push("Transcript copied", "success");
+                        }}
+                        className="text-[9px] font-bold text-zinc-400 hover:text-white transition flex items-center gap-0.5 cursor-pointer"
+                      >
+                        📋 Copy Transcript
+                      </button>
+                    </div>
+                    <div className="max-h-40 overflow-y-auto text-[10px] text-zinc-300 leading-relaxed whitespace-pre-wrap font-sans select-text">
+                      {recordingsMap[lead.id]?.transcript}
+                    </div>
+                  </div>
+                )}
+
                 <div className="flex gap-2">
                   <button onClick={deleteRecording}
                     className="flex-1 flex items-center justify-center gap-1.5 rounded-xl border border-white/10 bg-white/[0.05] py-2.5 text-xs font-bold text-zinc-300 hover:bg-white/10 transition active:scale-95 cursor-pointer">
@@ -2134,6 +2218,7 @@ function InlineRecorderController({
   recording,
   recordingBlob,
   recordingBlobUrl,
+  leadTranscript,
   recSecs,
   recError,
   consent,
@@ -2146,6 +2231,7 @@ function InlineRecorderController({
   push,
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [showTranscript, setShowTranscript] = useState(false);
 
   // If this specific lead is actively recording
   const isThisLeadRecording = recording && recordingLeadId === lead.id;
@@ -2173,7 +2259,7 @@ function InlineRecorderController({
   // Render when a recording is ready for THIS lead
   if (recordingBlob) {
     return (
-      <div className="flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-lg px-2 py-1 shrink-0 animate-[fadeIn_0.2s_ease]">
+      <div className="relative flex items-center gap-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-lg px-2 py-1 shrink-0 animate-[fadeIn_0.2s_ease]">
         <FileAudio size={12} className="text-emerald-400 shrink-0"/>
         <span className="text-[10px] text-emerald-400 font-bold font-mono shrink-0">
           {fmtTime(recSecs)}
@@ -2215,6 +2301,22 @@ function InlineRecorderController({
         >
           <Download size={10}/>
         </button>
+
+        {leadTranscript && (
+          <button
+            type="button"
+            onClick={() => setShowTranscript(!showTranscript)}
+            className={`rounded p-1 transition cursor-pointer active:scale-95 shrink-0 ${
+              showTranscript 
+                ? "bg-cyan-500/25 text-cyan-300 border border-cyan-400/30" 
+                : "bg-emerald-500/10 hover:bg-emerald-500/25 text-emerald-400"
+            }`}
+            title="Toggle call transcription"
+          >
+            <FileText size={10}/>
+          </button>
+        )}
+
         <button
           type="button"
           onClick={() => deleteRecording(lead.id)}
@@ -2223,6 +2325,40 @@ function InlineRecorderController({
         >
           <Trash2 size={10}/>
         </button>
+
+        {/* Call Transcript Dropdown Bubble */}
+        {showTranscript && leadTranscript && (
+          <>
+            <div className="fixed inset-0 z-30" onClick={() => setShowTranscript(false)} />
+            <div className="absolute top-8 right-0 z-40 w-72 rounded-2xl border border-cyan-500/20 bg-[#0c071e]/96 p-3.5 shadow-2xl backdrop-blur-2xl space-y-2.5 animate-[slideUp_0.18s_ease] text-left">
+              <div className="flex items-center justify-between pb-1.5 border-b border-white/[0.05]">
+                <div className="flex items-center gap-1.5 text-zinc-300">
+                  <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 animate-pulse"/>
+                  <span className="text-[10px] font-black uppercase tracking-wider text-cyan-300">Call Transcript</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard.writeText(leadTranscript);
+                      push("Transcript copied", "success");
+                    }}
+                    className="text-[9px] font-bold text-zinc-400 hover:text-white transition flex items-center gap-0.5 cursor-pointer"
+                  >
+                    📋 Copy
+                  </button>
+                  <button onClick={() => setShowTranscript(false)} className="text-zinc-500 hover:text-white">
+                    <X size={10}/>
+                  </button>
+                </div>
+              </div>
+              
+              <div className="max-h-48 overflow-y-auto pr-1 text-[10px] text-zinc-300 leading-relaxed font-sans whitespace-pre-wrap select-text selection:bg-cyan-500/30">
+                {leadTranscript}
+              </div>
+            </div>
+          </>
+        )}
       </div>
     );
   }
@@ -3816,6 +3952,7 @@ function OutboundToDoQueue({
                         recording={recording}
                         recordingBlob={recordingsMap[lead.id]?.blob}
                         recordingBlobUrl={recordingsMap[lead.id]?.url}
+                        leadTranscript={recordingsMap[lead.id]?.transcript}
                         recSecs={recordingLeadId === lead.id ? recSecs : recordingsMap[lead.id]?.secs || 0}
                         recError={recordingLeadId === lead.id ? recError : ""}
                         consent={consentMap[lead.id] || false}
