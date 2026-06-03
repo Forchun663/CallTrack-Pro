@@ -168,6 +168,10 @@ function useToast() {
   return { toasts, push };
 }
 
+const DEFAULT_TABS = [
+  { id: "workspace", title: "Workspace", url: "", isDefault: true }
+];
+
 /* ══════════════════════════ APP ROOT ══════════════════════════════ */
 
 export default function App() {
@@ -178,6 +182,24 @@ export default function App() {
   /* Leads */
   const [leads, setLeads]           = useState([]);
   const [leadsLoading, setLeadsLoading] = useState(false);
+
+  /* Lead selection (for bulk operations) */
+  const [selectedLeadIds, setSelectedLeadIds] = useState(new Set());
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const [wipingDatabase, setWipingDatabase] = useState(false);
+
+  /* Browser Tab System */
+  const [customTabs, setCustomTabs] = useState(() => {
+    try {
+      const saved = localStorage.getItem("calltrack_custom_tabs");
+      return saved ? JSON.parse(saved) : DEFAULT_TABS;
+    } catch (e) {
+      return DEFAULT_TABS;
+    }
+  });
+  const [activeTabId, setActiveTabId] = useState("workspace");
+  const [showAddTabModal, setShowAddTabModal] = useState(false);
+  const activeTab = customTabs.find((t) => t.id === activeTabId);
 
   /* Form */
   const [form, setForm]             = useState(EMPTY_LEAD);
@@ -196,6 +218,82 @@ export default function App() {
 
   /* Toasts */
   const { toasts, push }            = useToast();
+
+  /* Sync custom tabs to local storage */
+  useEffect(() => {
+    localStorage.setItem("calltrack_custom_tabs", JSON.stringify(customTabs));
+  }, [customTabs]);
+
+  /* Sync selection when leads list changes */
+  useEffect(() => {
+    setSelectedLeadIds((prev) => {
+      const next = new Set();
+      prev.forEach((id) => {
+        if (leads.some((l) => l.id === id)) next.add(id);
+      });
+      return next;
+    });
+  }, [leads]);
+
+  /* Toggle selection of a single lead */
+  const handleToggleSelect = useCallback((leadId) => {
+    setSelectedLeadIds((prev) => {
+      const copy = new Set(prev);
+      if (copy.has(leadId)) {
+        copy.delete(leadId);
+      } else {
+        copy.add(leadId);
+      }
+      return copy;
+    });
+  }, []);
+
+  /* Delete all selected leads */
+  async function deleteSelectedLeads() {
+    const count = selectedLeadIds.size;
+    if (count === 0) return;
+    if (!confirm(`Permanently delete the ${count} selected leads?`)) return;
+    setBulkDeleting(true);
+    try {
+      const { error } = await supabase
+        .from("leads")
+        .delete()
+        .in("id", Array.from(selectedLeadIds))
+        .eq("user_id", session.user.id);
+      if (error) throw error;
+      setLeads((p) => p.filter((l) => !selectedLeadIds.has(l.id)));
+      setSelectedLeadIds(new Set());
+      push(`Successfully deleted ${count} leads`, "success");
+    } catch (e) {
+      console.error("Bulk delete error:", e);
+      push("Bulk delete failed: " + e.message, "error");
+    } finally {
+      setBulkDeleting(false);
+    }
+  }
+
+  /* Wipe entire lead database for user */
+  async function wipeDatabase() {
+    if (!confirm("⚠️ CRITICAL WARNING: You are about to permanently delete ALL leads in your workspace. This action CANNOT be undone. Are you sure you want to proceed?")) return;
+    if (!confirm("To confirm deletion, please click OK. All your leads, activity history, and recordings will be erased forever.")) return;
+    setWipingDatabase(true);
+    try {
+      const { error } = await supabase
+        .from("leads")
+        .delete()
+        .eq("user_id", session.user.id);
+      if (error) throw error;
+      setLeads([]);
+      setSelectedLeadIds(new Set());
+      setFocused(null);
+      push("All leads successfully deleted", "success");
+    } catch (e) {
+      console.error("Wipe database error:", e);
+      push("Failed to delete all leads: " + e.message, "error");
+    } finally {
+      setWipingDatabase(false);
+    }
+  }
 
   /* Bulk Importer */
   const [showImportModal, setShowImportModal] = useState(false);
@@ -997,6 +1095,16 @@ export default function App() {
                 <MiniStat label="Tomorrow" value={stats.tomorrow} accent="text-cyan-400" />
                 <MiniStat label="Due" value={stats.due} accent={stats.due > 0 ? "text-yellow-400" : undefined} />
               </div>
+              {leads.length > 0 && (
+                <button
+                  onClick={wipeDatabase}
+                  disabled={wipingDatabase}
+                  className="flex items-center gap-1.5 rounded-xl border border-red-500/20 bg-red-500/8 px-3 py-2 text-xs font-bold text-red-300 hover:bg-red-500/15 transition-all cursor-pointer disabled:opacity-50"
+                  title="Permanently wipe all leads in your database"
+                >
+                  {wipingDatabase ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />} Wipe Database
+                </button>
+              )}
               <button
                 onClick={() => supabase.auth.signOut()}
                 className="flex items-center gap-1.5 rounded-xl border border-red-500/20 bg-red-500/8 px-3 py-2 text-xs font-bold text-red-300 hover:bg-red-500/15 transition-all"
@@ -1007,7 +1115,61 @@ export default function App() {
           </div>
         </header>
 
-        {/* ── STATS BAR ── */}
+        {/* ── BROWSER TABS BAR ── */}
+        <div className="mb-5 flex flex-wrap items-center gap-2 border-b border-white/[0.06] pb-3">
+          {customTabs.map((t) => {
+            const isActive = activeTabId === t.id;
+            return (
+              <div
+                key={t.id}
+                className={`group relative flex items-center gap-2 rounded-t-2xl border-t border-x px-4 py-2.5 text-xs font-bold transition duration-200 cursor-pointer ${
+                  isActive
+                    ? "border-cyan-500/30 bg-white/[0.04] text-cyan-300 font-black shadow-lg shadow-cyan-950/20"
+                    : "border-transparent bg-transparent text-zinc-400 hover:bg-white/[0.02] hover:text-white"
+                }`}
+                onClick={() => setActiveTabId(t.id)}
+              >
+                {t.isDefault ? (
+                  <LayoutDashboard size={13} className="text-cyan-400" />
+                ) : (
+                  <Globe size={13} className="text-zinc-500 group-hover:text-cyan-400 transition" />
+                )}
+                <span>{t.title}</span>
+                {!t.isDefault && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setCustomTabs((prev) => {
+                        const next = prev.filter((tab) => tab.id !== t.id);
+                        if (activeTabId === t.id) {
+                          setActiveTabId("workspace");
+                        }
+                        return next;
+                      });
+                      push("Tab deleted", "info");
+                    }}
+                    className="ml-1.5 opacity-0 group-hover:opacity-100 rounded p-0.5 hover:bg-white/10 text-zinc-500 hover:text-white transition"
+                    title="Close tab"
+                  >
+                    <X size={10} />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+          
+          <button
+            onClick={() => setShowAddTabModal(true)}
+            className="flex items-center justify-center rounded-xl bg-white/[0.04] hover:bg-white/10 border border-white/[0.06] p-2 text-zinc-400 hover:text-white transition active:scale-90 cursor-pointer"
+            title="Add Call Center Tab"
+          >
+            <Plus size={14} />
+          </button>
+        </div>
+
+        {activeTabId === "workspace" && (
+          <>
+            {/* ── STATS BAR ── */}
         <div className="mb-5 grid grid-cols-2 gap-2 sm:grid-cols-5">
           {[
             { key:"all",        label:"Total Leads", val:stats.total,      icon:<LayoutDashboard size={14}/> },
@@ -1307,6 +1469,53 @@ export default function App() {
               </div>
             )}
 
+            {/* Bulk Actions Panel */}
+            {selectedLeadIds.size > 0 && (
+              <div className="rounded-2xl border border-red-500/20 bg-red-500/5 p-4 flex flex-col sm:flex-row items-center justify-between gap-3 shadow-lg mb-3 animate-[slideUp_0.2s_ease]">
+                <div className="flex items-center gap-2">
+                  <span className="h-2.5 w-2.5 rounded-full bg-red-500 animate-pulse" />
+                  <span className="text-xs font-black text-red-300">
+                    {selectedLeadIds.size} Lead{selectedLeadIds.size !== 1 && "s"} Selected
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      const allVisibleSelected = filtered.every((l) => selectedLeadIds.has(l.id));
+                      setSelectedLeadIds((prev) => {
+                        const next = new Set(prev);
+                        filtered.forEach((l) => {
+                          if (allVisibleSelected) {
+                            next.delete(l.id);
+                          } else {
+                            next.add(l.id);
+                          }
+                        });
+                        return next;
+                      });
+                    }}
+                    className="rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 px-3 py-1.5 text-[10px] font-black text-zinc-300 hover:text-white transition active:scale-95 cursor-pointer"
+                  >
+                    {filtered.every((l) => selectedLeadIds.has(l.id)) ? "Deselect All Visible" : "Select All Visible"}
+                  </button>
+                  <button
+                    onClick={() => setSelectedLeadIds(new Set())}
+                    className="rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 px-3 py-1.5 text-[10px] font-black text-zinc-400 hover:text-white transition active:scale-95 cursor-pointer"
+                  >
+                    Clear Selection
+                  </button>
+                  <button
+                    onClick={deleteSelectedLeads}
+                    disabled={bulkDeleting}
+                    className="flex items-center gap-1.5 rounded-xl bg-red-650 hover:bg-red-500 text-white px-3.5 py-1.5 text-xs font-black shadow-md shadow-red-950/30 transition active:scale-95 disabled:opacity-50 cursor-pointer"
+                  >
+                    {bulkDeleting ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+                    Delete Selected
+                  </button>
+                </div>
+              </div>
+            )}
+
             {/* Lead cards */}
             {leadsLoading ? (
               <div className="rounded-3xl border border-dashed border-white/10 bg-white/[0.02] p-16 flex flex-col items-center gap-3 text-zinc-500">
@@ -1332,12 +1541,100 @@ export default function App() {
                     onSelect={setFocused}
                     onTriggerResolution={triggerCallResolution}
                     push={push}
+                    selected={selectedLeadIds.has(lead.id)}
+                    onToggleSelect={() => handleToggleSelect(lead.id)}
                   />
                 ))}
               </div>
             )}
           </div>
         </div>
+        </>)}
+
+        {activeTab && activeTab.id !== "workspace" && (
+          <div className="rounded-3xl border border-white/[0.07] bg-white/[0.03] p-5 shadow-xl backdrop-blur-2xl space-y-4 animate-[slideUp_0.25s_ease]">
+            {/* Control Bar */}
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-3 border-b border-white/[0.06] pb-4">
+              <div className="flex items-center gap-3 w-full sm:w-auto">
+                <div className="flex items-center gap-1.5 rounded-xl border border-white/[0.06] bg-black/20 p-1.5 text-zinc-500">
+                  <button
+                    onClick={() => setActiveTabId("workspace")}
+                    className="rounded-lg hover:bg-white/5 px-2 py-1 text-[10px] font-bold text-zinc-400 hover:text-white transition cursor-pointer"
+                  >
+                    ← Workspace
+                  </button>
+                </div>
+                <h2 className="text-base font-black text-white flex items-center gap-1.5 truncate">
+                  <Globe size={15} className="text-cyan-400" /> {activeTab.title}
+                </h2>
+              </div>
+
+              {/* Address bar input */}
+              <div className="flex items-center gap-2 w-full sm:flex-1 max-w-xl">
+                <div className="relative w-full">
+                  <Globe className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" size={12} />
+                  <input
+                    type="text"
+                    value={activeTab.url}
+                    readOnly
+                    className="w-full rounded-xl border border-white/[0.06] bg-black/45 py-2 pl-9 pr-4 text-xs font-mono text-zinc-400 outline-none select-all"
+                  />
+                </div>
+                <button
+                  onClick={() => {
+                    const iframe = document.getElementById(`iframe-${activeTab.id}`);
+                    if (iframe) {
+                      const src = iframe.src;
+                      iframe.src = "";
+                      setTimeout(() => { iframe.src = src; }, 50);
+                    }
+                    push("Refreshing tab...", "info");
+                  }}
+                  className="rounded-xl border border-white/[0.06] bg-white/[0.04] p-2.5 text-zinc-400 hover:text-white hover:bg-white/10 transition active:scale-95 cursor-pointer"
+                  title="Reload Tab"
+                >
+                  <RotateCcw size={13} />
+                </button>
+                <button
+                  onClick={() => {
+                    window.open(
+                      activeTab.url,
+                      `calltrack_tab_${activeTab.id}`,
+                      "width=1100,height=800,menubar=no,toolbar=no,location=no,status=no"
+                    );
+                    push("Opened in split window popup", "success");
+                  }}
+                  className="flex items-center gap-1 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-400 hover:to-blue-400 text-white px-3.5 py-2 text-xs font-black shadow-md transition active:scale-95 cursor-pointer shrink-0"
+                  title="Open this service in a side-by-side floating browser window"
+                >
+                  <ExternalLink size={12} /> Pop Out
+                </button>
+              </div>
+            </div>
+
+            {/* Iframe warning/instructions banner */}
+            <div className="rounded-2xl border border-yellow-400/15 bg-yellow-400/[0.03] p-4 text-[11px] leading-relaxed text-yellow-200/95 flex items-start gap-3">
+              <span className="text-base shrink-0">⚠️</span>
+              <div>
+                <p className="font-black text-white">Google Voice & Security Embed Policy:</p>
+                <p className="mt-0.5">
+                  Due to browser security regulations, websites like **Google Voice** block being embedded directly inside other apps. If the screen below remains blank or shows a connection error, simply click the <span className="font-black text-cyan-300">Pop Out</span> button above to run the service in a dedicated floating panel next to your workspace, or install the Chrome extension <span className="font-bold underline text-white">Ignore X-Frame-Options</span> to allow embedding here.
+                </p>
+              </div>
+            </div>
+
+            {/* Iframe box container */}
+            <div className="relative rounded-2xl overflow-hidden border border-white/[0.06] bg-white h-[650px] shadow-inner">
+              <iframe
+                id={`iframe-${activeTab.id}`}
+                src={activeTab.url}
+                className="w-full h-full border-none"
+                title={activeTab.title}
+                sandbox="allow-same-origin allow-scripts allow-popups allow-forms"
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* ── FOCUSED LEAD DRAWER ── */}
@@ -1398,6 +1695,16 @@ export default function App() {
           preSelectOption={resolutionPreSelect}
           onClose={() => { setResolutionLead(null); setResolutionType(null); setResolutionPreSelect(null); }}
           onResolve={resolveOutboundCall}
+        />
+      )}
+
+      {/* ── ADD CUSTOM TAB MODAL ── */}
+      {showAddTabModal && (
+        <AddTabModal
+          setCustomTabs={setCustomTabs}
+          setActiveTabId={setActiveTabId}
+          onClose={() => setShowAddTabModal(false)}
+          push={push}
         />
       )}
     </div>
@@ -1839,7 +2146,7 @@ function FocusDrawer({
 
 /* ═══════════════════════ LEAD CARD ══════════════════════════════ */
 
-function LeadCard({ lead, onStatus, onDemoStatus, onFollowUp, onEdit, onDelete, onSelect, onTriggerResolution, push }) {
+function LeadCard({ lead, onStatus, onDemoStatus, onFollowUp, onEdit, onDelete, onSelect, onTriggerResolution, push, selected, onToggleSelect }) {
   const meta = statusMeta(lead.status);
   const due  = isDue(lead.nextFollowUp) && lead.status !== "no" && lead.status !== "closed";
   const mapsUrl = lead.mapsLink || (lead.address ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(lead.address)}` : null);
@@ -1859,54 +2166,64 @@ function LeadCard({ lead, onStatus, onDemoStatus, onFollowUp, onEdit, onDelete, 
 
   return (
     <article className={`group flex flex-col rounded-3xl border p-4.5 shadow-md backdrop-blur-xl transition-all duration-300 hover:-translate-y-1 hover:shadow-2xl hover:border-cyan-500/30 ${
-      due ? "border-yellow-400/30 bg-yellow-400/[0.04] shadow-yellow-950/10" : "border-white/[0.07] bg-white/[0.03]"
+      selected ? "border-cyan-500 bg-cyan-950/5" : due ? "border-yellow-400/30 bg-yellow-400/[0.04] shadow-yellow-950/10" : "border-white/[0.07] bg-white/[0.03]"
     }`}>
       {/* Card header */}
       <div className="flex items-start justify-between gap-3 mb-2.5">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap gap-1.5 mb-2">
-            <span className={`rounded-full border px-2 py-0.5 text-[9px] font-black tracking-wide uppercase ${meta.soft}`}>{meta.label}</span>
-            
-            {/* Website status badges */}
-            {lead.websiteStatus && (
-              <span className={`rounded-full border px-2 py-0.5 text-[9px] font-black tracking-wide uppercase ${
-                lead.websiteStatus === "No website" ? "border-red-500/30 bg-red-500/10 text-red-400" :
-                lead.websiteStatus === "Social media only" ? "border-purple-500/30 bg-purple-500/10 text-purple-300 animate-pulse" :
-                lead.websiteStatus === "Has website" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300" :
-                lead.websiteStatus === "Bad website" ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-300" :
-                "border-zinc-700 bg-zinc-800/30 text-zinc-400"
-              }`}>
-                {lead.websiteStatus === "No website" ? "🚫 No Website" :
-                 lead.websiteStatus === "Social media only" ? "📱 Socials Only" :
-                 lead.websiteStatus === "Has website" ? "✓ Has Website" :
-                 lead.websiteStatus === "Bad website" ? "⚠ Bad Website" : lead.websiteStatus}
-              </span>
-            )}
+        <div className="flex items-start gap-3 min-w-0 flex-1">
+          {/* Checkbox for Bulk Actions */}
+          <input
+            type="checkbox"
+            checked={selected || false}
+            onChange={onToggleSelect}
+            className="mt-1.5 w-4 h-4 rounded border-white/20 bg-black text-cyan-400 cursor-pointer shrink-0 focus:ring-0 focus:ring-offset-0"
+            onClick={(e) => e.stopPropagation()}
+          />
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              <span className={`rounded-full border px-2 py-0.5 text-[9px] font-black tracking-wide uppercase ${meta.soft}`}>{meta.label}</span>
+              
+              {/* Website status badges */}
+              {lead.websiteStatus && (
+                <span className={`rounded-full border px-2 py-0.5 text-[9px] font-black tracking-wide uppercase ${
+                  lead.websiteStatus === "No website" ? "border-red-500/30 bg-red-500/10 text-red-400" :
+                  lead.websiteStatus === "Social media only" ? "border-purple-500/30 bg-purple-500/10 text-purple-300 animate-pulse" :
+                  lead.websiteStatus === "Has website" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300" :
+                  lead.websiteStatus === "Bad website" ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-300" :
+                  "border-zinc-700 bg-zinc-800/30 text-zinc-400"
+                }`}>
+                  {lead.websiteStatus === "No website" ? "🚫 No Website" :
+                   lead.websiteStatus === "Social media only" ? "📱 Socials Only" :
+                   lead.websiteStatus === "Has website" ? "✓ Has Website" :
+                   lead.websiteStatus === "Bad website" ? "⚠ Bad Website" : lead.websiteStatus}
+                </span>
+              )}
 
-            {/* Demo website badges */}
-            {lead.demoStatus === "needs_demo" && (
-              <span className="rounded-full border border-fuchsia-400/30 bg-fuchsia-400/10 px-2 py-0.5 text-[9px] font-black text-fuchsia-300 animate-pulse">
-                📤 Needs Demo
-              </span>
-            )}
-            {lead.demoStatus === "sent" && (
-              <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[9px] font-black text-emerald-300">
-                ✓ Demo Sent
-              </span>
-            )}
+              {/* Demo website badges */}
+              {lead.demoStatus === "needs_demo" && (
+                <span className="rounded-full border border-fuchsia-400/30 bg-fuchsia-400/10 px-2 py-0.5 text-[9px] font-black text-fuchsia-300 animate-pulse">
+                  📤 Needs Demo
+                </span>
+              )}
+              {lead.demoStatus === "sent" && (
+                <span className="rounded-full border border-emerald-400/30 bg-emerald-400/10 px-2 py-0.5 text-[9px] font-black text-emerald-300">
+                  ✓ Demo Sent
+                </span>
+              )}
 
-            {lead.nextAction && lead.nextAction !== "Call" && (
-              <span className="rounded-full border border-cyan-400/15 bg-cyan-400/8 px-2 py-0.5 text-[9px] font-bold text-cyan-300">{lead.nextAction}</span>
-            )}
-            {due && <span className="rounded-full border border-yellow-400/30 bg-yellow-400/10 px-2 py-0.5 text-[9px] font-black text-yellow-300">⚡ Due</span>}
+              {lead.nextAction && lead.nextAction !== "Call" && (
+                <span className="rounded-full border border-cyan-400/15 bg-cyan-400/8 px-2 py-0.5 text-[9px] font-bold text-cyan-300">{lead.nextAction}</span>
+              )}
+              {due && <span className="rounded-full border border-yellow-400/30 bg-yellow-400/10 px-2 py-0.5 text-[9px] font-black text-yellow-300">⚡ Due</span>}
+            </div>
+            <h3
+              onClick={() => onSelect(lead)}
+              title="Open details & recording"
+              className="text-lg font-black text-white leading-snug hover:text-cyan-300 transition cursor-pointer group-hover:text-cyan-100">
+              {lead.businessName}
+            </h3>
+            {lead.category && <span className="inline-block rounded-md bg-zinc-900 border border-white/[0.04] px-1.5 py-0.5 text-[9px] font-extrabold text-zinc-400 mt-1 uppercase tracking-widest">{lead.category}</span>}
           </div>
-          <h3
-            onClick={() => onSelect(lead)}
-            title="Open details & recording"
-            className="text-lg font-black text-white leading-snug hover:text-cyan-300 transition cursor-pointer group-hover:text-cyan-100">
-            {lead.businessName}
-          </h3>
-          {lead.category && <span className="inline-block rounded-md bg-zinc-900 border border-white/[0.04] px-1.5 py-0.5 text-[9px] font-extrabold text-zinc-400 mt-1 uppercase tracking-widest">{lead.category}</span>}
         </div>
         <div className="flex gap-1 shrink-0">
           <button onClick={() => onEdit(lead)} title="Edit" className="rounded-xl p-2 bg-white/[0.04] hover:bg-white/10 text-zinc-500 hover:text-white transition"><Edit3 size={13}/></button>
@@ -4017,6 +4334,118 @@ function OutboundToDoQueue({
         </div>
       )}
     </div>
+  );
+}
+
+
+// ── ADD WORKSPACE TAB MODAL ──────────────────────────────────────────────────
+function AddTabModal({ setCustomTabs, setActiveTabId, onClose, push }) {
+  const [tabName, setTabName] = useState("");
+  const [tabUrl, setTabUrl] = useState("https://voice.google.com");
+
+  const presets = [
+    { name: "Google Voice 📞", url: "https://voice.google.com" },
+    { name: "Skype Web 💬", url: "https://web.skype.com" },
+    { name: "RingCentral 📞", url: "https://app.ringcentral.com" },
+    { name: "Custom Dial Portal 🌐", url: "https://" }
+  ];
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    if (!tabName.trim() || !tabUrl.trim()) return;
+
+    let finalUrl = tabUrl.trim();
+    if (!/^https?:\/\//i.test(finalUrl)) {
+      finalUrl = "https://" + finalUrl;
+    }
+
+    const newTab = {
+      id: "tab_" + Date.now(),
+      title: tabName.trim(),
+      url: finalUrl
+    };
+
+    setCustomTabs((prev) => [...prev, newTab]);
+    setActiveTabId(newTab.id);
+    onClose();
+    push(`Tab "${tabName}" added! ✓`, "success");
+  }
+
+  return (
+    <>
+      {/* Backdrop */}
+      <div onClick={onClose} className="fixed inset-0 z-[60] bg-black/75 backdrop-blur-md" />
+      
+      {/* Modal Box */}
+      <div className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[70] w-full max-w-md border border-white/10 bg-[#060212] rounded-3xl shadow-2xl p-6 backdrop-blur-3xl animate-[scaleUp_0.25s_ease]">
+        <div className="mb-4">
+          <span className="text-[10px] font-black uppercase tracking-[0.2em] text-cyan-400">Add Workspace Tab</span>
+          <h2 className="text-xl font-black text-white mt-1">➕ Create Custom Tab</h2>
+          <p className="text-xs text-zinc-500 mt-1">Open calling sites or utility pages right inside CallTrack Pro</p>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="space-y-3">
+            <Field label="Preset Quick Dialers">
+              <div className="grid grid-cols-2 gap-1.5">
+                {presets.map((p) => (
+                  <button
+                    key={p.name}
+                    type="button"
+                    onClick={() => {
+                      setTabName(p.name.replace(/[^a-zA-Z\s]/g, "").trim());
+                      setTabUrl(p.url);
+                    }}
+                    className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-2 text-[10px] font-bold text-zinc-400 hover:text-white hover:border-cyan-500/30 transition text-left cursor-pointer active:scale-95"
+                  >
+                    {p.name}
+                  </button>
+                ))}
+              </div>
+            </Field>
+
+            <Field label="Tab Title">
+              <input
+                type="text"
+                required
+                value={tabName}
+                onChange={(e) => setTabName(e.target.value)}
+                placeholder="e.g. Google Voice, CRM Portal"
+                className={inputCls}
+              />
+            </Field>
+
+            <Field label="URL / Destination Link">
+              <input
+                type="text"
+                required
+                value={tabUrl}
+                onChange={(e) => setTabUrl(e.target.value)}
+                placeholder="https://..."
+                className={inputCls}
+              />
+            </Field>
+          </div>
+
+          <div className="flex justify-end gap-2 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-xl border border-white/5 bg-white/5 px-4 py-2.5 text-xs font-bold text-zinc-400 hover:bg-white/10 transition cursor-pointer"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={!tabName.trim() || !tabUrl.trim()}
+              className="rounded-xl bg-gradient-to-r from-cyan-500 to-blue-500 px-5 py-2.5 text-xs font-black text-white shadow-lg transition active:scale-95 disabled:opacity-50 cursor-pointer"
+            >
+              ✓ Open Tab
+            </button>
+          </div>
+        </form>
+      </div>
+    </>
   );
 }
 
