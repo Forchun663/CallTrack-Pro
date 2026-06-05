@@ -258,8 +258,7 @@ export default function App() {
       const { error } = await supabase
         .from("leads")
         .delete()
-        .in("id", Array.from(selectedLeadIds))
-        .eq("user_id", session.user.id);
+        .in("id", Array.from(selectedLeadIds));
       if (error) throw error;
       setLeads((p) => p.filter((l) => !selectedLeadIds.has(l.id)));
       setSelectedLeadIds(new Set());
@@ -272,21 +271,22 @@ export default function App() {
     }
   }
 
-  /* Wipe entire lead database for user */
+  /* Wipe entire shared workspace database */
   async function wipeDatabase() {
-    if (!confirm("⚠️ CRITICAL WARNING: You are about to permanently delete ALL leads in your workspace. This action CANNOT be undone. Are you sure you want to proceed?")) return;
-    if (!confirm("To confirm deletion, please click OK. All your leads, activity history, and recordings will be erased forever.")) return;
+    if (!confirm("⚠️ CRITICAL WARNING: You are about to permanently delete ALL leads in the shared workspace. This will affect ALL team members and CANNOT be undone. Are you sure?")) return;
+    if (!confirm("FINAL CONFIRMATION: Click OK to erase all leads, activity history, and recordings for the entire team.")) return;
     setWipingDatabase(true);
     try {
+      // Delete all leads (shared workspace — no user_id filter)
       const { error } = await supabase
         .from("leads")
         .delete()
-        .eq("user_id", session.user.id);
+        .neq("id", "00000000-0000-0000-0000-000000000000"); // match all rows
       if (error) throw error;
       setLeads([]);
       setSelectedLeadIds(new Set());
       setFocused(null);
-      push("All leads successfully deleted", "success");
+      push("All leads successfully deleted from shared workspace", "success");
     } catch (e) {
       console.error("Wipe database error:", e);
       push("Failed to delete all leads: " + e.message, "error");
@@ -546,7 +546,7 @@ export default function App() {
 
   /* ── Load leads ── */
 
-  /* ── Load leads ── */
+  /* ── Load leads (shared workspace — all users see all leads) ── */
   useEffect(() => {
     if (!session) { setLeads([]); return; }
     (async () => {
@@ -554,7 +554,6 @@ export default function App() {
       try {
         const { data, error } = await supabase
           .from("leads").select("*")
-          .eq("user_id", session.user.id)
           .order("created_at", { ascending: false });
         if (error) throw error;
         setLeads((data || []).map(mapToState));
@@ -563,6 +562,42 @@ export default function App() {
         setSupaError(e.message);
       } finally { setLeadsLoading(false); }
     })();
+
+    /* ── Realtime subscription: sync changes from all team members ── */
+    const channel = supabase
+      .channel("shared_leads_realtime")
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "leads" },
+        (payload) => {
+          const newLead = mapToState(payload.new);
+          setLeads((prev) => {
+            if (prev.some((l) => l.id === newLead.id)) return prev;
+            return [newLead, ...prev];
+          });
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "leads" },
+        (payload) => {
+          const updated = mapToState(payload.new);
+          setLeads((prev) => prev.map((l) => l.id === updated.id ? updated : l));
+          setFocused((f) => f && f.id === updated.id ? updated : f);
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "DELETE", schema: "public", table: "leads" },
+        (payload) => {
+          const deletedId = payload.old.id;
+          setLeads((prev) => prev.filter((l) => l.id !== deletedId));
+          setFocused((f) => f && f.id === deletedId ? null : f);
+        }
+      )
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
   }, [session]);
 
   /* ── Derived ── */
@@ -742,7 +777,7 @@ export default function App() {
         google_place_id:form.googlePlaceId || null,
       };
       if (editingId) {
-        const { error } = await supabase.from("leads").update(row).eq("id", editingId).eq("user_id", session.user.id);
+        const { error } = await supabase.from("leads").update(row).eq("id", editingId);
         if (error) throw error;
         const { data: fresh } = await supabase.from("leads").select("*").eq("id", editingId).single();
         const mapped = mapToState(fresh);
@@ -766,7 +801,7 @@ export default function App() {
   async function deleteLead(id) {
     if (!confirm("Permanently delete this lead?")) return;
     try {
-      const { error } = await supabase.from("leads").delete().eq("id", id).eq("user_id", session.user.id);
+      const { error } = await supabase.from("leads").delete().eq("id", id);
       if (error) throw error;
       setLeads((p) => p.filter((l) => l.id !== id));
       if (focused?.id === id) setFocused(null);
@@ -783,7 +818,7 @@ export default function App() {
     try {
       const { error: e1 } = await supabase.from("leads")
         .update({ status: newStatus, last_contacted: today })
-        .eq("id", id).eq("user_id", session.user.id);
+        .eq("id", id);
       if (e1) throw e1;
       const { error: e2 } = await supabase.from("lead_activities").insert([{
         lead_id: id, user_id: session.user.id,
@@ -810,7 +845,7 @@ export default function App() {
     try {
       const { error: e1 } = await supabase.from("leads")
         .update({ notes: repackedNotes })
-        .eq("id", id).eq("user_id", session.user.id);
+        .eq("id", id);
       if (e1) throw e1;
       
       const { error: e2 } = await supabase.from("lead_activities").insert([{
@@ -841,7 +876,7 @@ export default function App() {
     try {
       const { error: e1 } = await supabase.from("leads")
         .update({ next_follow_up: dateStr })
-        .eq("id", id).eq("user_id", session.user.id);
+        .eq("id", id);
       if (e1) throw e1;
       
       const { error: e2 } = await supabase.from("lead_activities").insert([{
@@ -880,7 +915,7 @@ export default function App() {
       
       const { error: e1 } = await supabase.from("leads")
         .update(updateData)
-        .eq("id", id).eq("user_id", session.user.id);
+        .eq("id", id);
       if (e1) throw e1;
 
       let logNotes = `Status outcome logged: ${statusMeta(newStatus).label}`;
@@ -968,7 +1003,7 @@ export default function App() {
 
       const { error: e1 } = await supabase.from("leads")
         .update(updateData)
-        .eq("id", id).eq("user_id", session.user.id);
+        .eq("id", id);
       if (e1) throw e1;
 
       // 2. Log activity
@@ -1064,7 +1099,7 @@ export default function App() {
       </div>
 
       {/* Toast system */}
-      <div className="fixed bottom-6 right-6 z-[99] flex flex-col gap-2 pointer-events-none">
+      <div className="fixed bottom-4 left-1/2 -translate-x-1/2 sm:left-auto sm:right-6 sm:translate-x-0 sm:bottom-6 z-[99] flex flex-col gap-2 pointer-events-none w-[calc(100vw-2rem)] sm:w-auto max-w-sm">
         {toasts.map((t) => (
           <div key={t.id} className={`pointer-events-auto flex items-center gap-2.5 rounded-2xl border px-4 py-3 text-xs font-bold shadow-2xl backdrop-blur-xl animate-[slideUp_0.25s_ease] ${
             t.type === "success" ? "border-emerald-400/30 bg-emerald-950/80 text-emerald-300" :
@@ -1076,53 +1111,43 @@ export default function App() {
         ))}
       </div>
 
-      <div className="relative z-10 mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+      <div className="relative z-10 mx-auto max-w-7xl px-3 py-4 sm:px-6 lg:px-8">
 
         {/* ── HEADER ── */}
-        <header className="mb-5 rounded-3xl border border-white/[0.07] bg-white/[0.04] px-6 py-4 backdrop-blur-2xl shadow-xl">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="mb-0.5 text-[10px] font-black uppercase tracking-[0.2em] text-cyan-400">Sales Workspace</p>
-              <h1 className="bg-gradient-to-r from-white via-cyan-100 to-fuchsia-300 bg-clip-text text-3xl font-black tracking-tight text-transparent sm:text-4xl">
+        <header className="mb-4 rounded-2xl sm:rounded-3xl border border-white/[0.07] bg-white/[0.04] px-4 py-3 sm:px-6 sm:py-4 backdrop-blur-2xl shadow-xl">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <p className="mb-0.5 text-[9px] sm:text-[10px] font-black uppercase tracking-[0.2em] text-cyan-400">Team Workspace</p>
+              <h1 className="bg-gradient-to-r from-white via-cyan-100 to-fuchsia-300 bg-clip-text text-2xl sm:text-4xl font-black tracking-tight text-transparent">
                 CallTrack Pro
               </h1>
-              <p className="mt-1 text-xs text-zinc-500">{session.user.email} · {leads.length} leads tracked</p>
+              <p className="mt-0.5 text-[10px] sm:text-xs text-zinc-500 truncate max-w-[180px] sm:max-w-none">{session.user.email} · {leads.length} leads</p>
             </div>
-            <div className="flex items-center gap-3">
-              <div className="hidden sm:grid grid-cols-4 gap-2 text-center">
+            <div className="flex items-center gap-2 shrink-0">
+              <div className="hidden md:grid grid-cols-4 gap-2 text-center">
                 <MiniStat label="Leads" value={stats.total} />
-                <MiniStat label="Called Today" value={stats.calledToday} accent="text-emerald-400" />
+                <MiniStat label="Called" value={stats.calledToday} accent="text-emerald-400" />
                 <MiniStat label="Tomorrow" value={stats.tomorrow} accent="text-cyan-400" />
                 <MiniStat label="Due" value={stats.due} accent={stats.due > 0 ? "text-yellow-400" : undefined} />
               </div>
-              {leads.length > 0 && (
-                <button
-                  onClick={wipeDatabase}
-                  disabled={wipingDatabase}
-                  className="flex items-center gap-1.5 rounded-xl border border-red-500/20 bg-red-500/8 px-3 py-2 text-xs font-bold text-red-300 hover:bg-red-500/15 transition-all cursor-pointer disabled:opacity-50"
-                  title="Permanently wipe all leads in your database"
-                >
-                  {wipingDatabase ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />} Wipe Database
-                </button>
-              )}
               <button
                 onClick={() => supabase.auth.signOut()}
-                className="flex items-center gap-1.5 rounded-xl border border-red-500/20 bg-red-500/8 px-3 py-2 text-xs font-bold text-red-300 hover:bg-red-500/15 transition-all"
+                className="flex items-center gap-1.5 rounded-xl border border-red-500/20 bg-red-500/8 px-2.5 py-2 sm:px-3 text-xs font-bold text-red-300 hover:bg-red-500/15 transition-all"
               >
-                <LogOut size={13} /> Log Out
+                <LogOut size={13} /> <span className="hidden sm:inline">Log Out</span>
               </button>
             </div>
           </div>
         </header>
 
         {/* ── BROWSER TABS BAR ── */}
-        <div className="mb-5 flex flex-wrap items-center gap-2 border-b border-white/[0.06] pb-3">
+        <div className="mb-4 flex items-center gap-2 border-b border-white/[0.06] pb-3 overflow-x-auto scrollbar-hide">
           {customTabs.map((t) => {
             const isActive = activeTabId === t.id;
             return (
               <div
                 key={t.id}
-                className={`group relative flex items-center gap-2 rounded-t-2xl border-t border-x px-4 py-2.5 text-xs font-bold transition duration-200 cursor-pointer ${
+                className={`group relative flex shrink-0 items-center gap-2 rounded-t-2xl border-t border-x px-3 py-2 sm:px-4 sm:py-2.5 text-xs font-bold transition duration-200 cursor-pointer ${
                   isActive
                     ? "border-cyan-500/30 bg-white/[0.04] text-cyan-300 font-black shadow-lg shadow-cyan-950/20"
                     : "border-transparent bg-transparent text-zinc-400 hover:bg-white/[0.02] hover:text-white"
@@ -1134,7 +1159,7 @@ export default function App() {
                 ) : (
                   <Globe size={13} className="text-zinc-500 group-hover:text-cyan-400 transition" />
                 )}
-                <span>{t.title}</span>
+                <span className="whitespace-nowrap">{t.title}</span>
                 {!t.isDefault && (
                   <button
                     onClick={(e) => {
@@ -1148,7 +1173,7 @@ export default function App() {
                       });
                       push("Tab deleted", "info");
                     }}
-                    className="ml-1.5 opacity-0 group-hover:opacity-100 rounded p-0.5 hover:bg-white/10 text-zinc-500 hover:text-white transition"
+                    className="ml-1 opacity-0 group-hover:opacity-100 rounded p-0.5 hover:bg-white/10 text-zinc-500 hover:text-white transition"
                     title="Close tab"
                   >
                     <X size={10} />
@@ -1160,7 +1185,7 @@ export default function App() {
           
           <button
             onClick={() => setShowAddTabModal(true)}
-            className="flex items-center justify-center rounded-xl bg-white/[0.04] hover:bg-white/10 border border-white/[0.06] p-2 text-zinc-400 hover:text-white transition active:scale-90 cursor-pointer"
+            className="flex shrink-0 items-center justify-center rounded-xl bg-white/[0.04] hover:bg-white/10 border border-white/[0.06] p-2 text-zinc-400 hover:text-white transition active:scale-90 cursor-pointer"
             title="Add Call Center Tab"
           >
             <Plus size={14} />
@@ -1170,7 +1195,7 @@ export default function App() {
         {activeTabId === "workspace" && (
           <>
             {/* ── STATS BAR ── */}
-        <div className="mb-5 grid grid-cols-2 gap-2 sm:grid-cols-5">
+        <div className="mb-4 grid grid-cols-2 gap-2 sm:grid-cols-5">
           {[
             { key:"all",        label:"Total Leads", val:stats.total,      icon:<LayoutDashboard size={14}/> },
             { key:"call_today", label:"Due Today",   val:stats.due,        icon:<CalendarDays size={14}/>, accent:stats.due > 0 ? "text-yellow-400" : undefined },
@@ -1195,10 +1220,10 @@ export default function App() {
         </div>
 
         {/* ── MAIN GRID ── */}
-        <div className="grid gap-5 lg:grid-cols-[400px_1fr]">
+        <div className="grid gap-4 lg:gap-5 lg:grid-cols-[400px_1fr]">
 
           {/* ══ LEFT: ADD/EDIT FORM ══ */}
-          <div className="rounded-3xl border border-white/[0.07] bg-white/[0.03] p-5 shadow-xl backdrop-blur-2xl lg:sticky lg:top-5 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto lg:self-start">
+          <div className="rounded-2xl sm:rounded-3xl border border-white/[0.07] bg-white/[0.03] p-4 sm:p-5 shadow-xl backdrop-blur-2xl lg:sticky lg:top-5 lg:max-h-[calc(100vh-2rem)] lg:overflow-y-auto lg:self-start">
 
             {/* Form header */}
             <div className="mb-4 flex items-center justify-between">
@@ -1782,7 +1807,7 @@ function FocusDrawer({
       <div onClick={onClose} className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm" />
 
       {/* Drawer */}
-      <div className="fixed inset-y-0 right-0 z-50 flex w-full max-w-[480px] flex-col border-l border-white/[0.07] bg-[#060212]/96 shadow-2xl backdrop-blur-2xl overflow-hidden">
+      <div className="fixed inset-y-0 right-0 z-50 flex w-full sm:max-w-[480px] flex-col border-l border-white/[0.07] bg-[#060212]/96 shadow-2xl backdrop-blur-2xl overflow-hidden">
 
         {/* Header */}
         <div className="flex-shrink-0 border-b border-white/[0.07] px-6 py-4">
@@ -2429,35 +2454,35 @@ function AuthScreen() {
   }
 
   return (
-    <div className="min-h-screen bg-[#05020f] flex items-center justify-center px-4 relative overflow-hidden">
+    <div className="min-h-screen bg-[#05020f] flex items-center justify-center px-4 py-8 relative overflow-hidden">
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_20%_20%,rgba(59,130,246,0.25),transparent_45%),radial-gradient(ellipse_at_80%_80%,rgba(168,85,247,0.2),transparent_45%)] pointer-events-none"/>
       <div className="relative w-full max-w-sm">
         <div className="absolute -inset-1 rounded-[2rem] bg-gradient-to-br from-cyan-500/20 to-fuchsia-500/20 blur-xl"/>
-        <div className="relative rounded-[2rem] border border-white/10 bg-white/[0.06] p-8 shadow-2xl backdrop-blur-2xl text-white">
-          <div className="text-center mb-8">
-            <p className="text-[10px] font-black uppercase tracking-[0.3em] text-cyan-400 mb-2">Sales Portal</p>
-            <h1 className="text-3xl font-black bg-gradient-to-r from-white to-cyan-200 bg-clip-text text-transparent">CallTrack Pro</h1>
-            <p className="text-xs text-zinc-500 mt-2">Sign in to your workspace</p>
+        <div className="relative rounded-[2rem] border border-white/10 bg-white/[0.06] p-6 sm:p-8 shadow-2xl backdrop-blur-2xl text-white">
+          <div className="text-center mb-6 sm:mb-8">
+            <p className="text-[10px] font-black uppercase tracking-[0.3em] text-cyan-400 mb-2">Team Workspace</p>
+            <h1 className="text-2xl sm:text-3xl font-black bg-gradient-to-r from-white to-cyan-200 bg-clip-text text-transparent">CallTrack Pro</h1>
+            <p className="text-xs text-zinc-500 mt-2">Sign in to access the shared workspace</p>
           </div>
           {error && <Alert type="error" msg={error}/>}
           <form onSubmit={submit} className="space-y-4">
             <Field label="Email">
               <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com" className={inputCls}/>
+                placeholder="you@example.com" className={inputCls} autoComplete="email"/>
             </Field>
             <Field label="Password">
               <input type="password" required value={password} onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••" className={inputCls}/>
+                placeholder="••••••••" className={inputCls} autoComplete="current-password"/>
             </Field>
             <button type="submit" disabled={loading}
               className="w-full flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-500 py-3.5 text-sm font-black text-white shadow-lg hover:scale-[1.01] active:scale-[0.99] transition disabled:opacity-50 cursor-pointer">
-              {loading ? <Loader2 className="animate-spin" size={16}/> : "Sign In"}
+              {loading ? <Loader2 className="animate-spin" size={16}/> : "Sign In →"}
             </button>
           </form>
-          <div className="mt-6 border-t border-white/[0.05] pt-4 text-center">
+          <div className="mt-5 border-t border-white/[0.05] pt-4 text-center">
             <p className="text-[10px] text-zinc-500 leading-relaxed">
-              🔐 <strong>Registration Disabled</strong><br />
-              Account creation is managed securely. Authorized users must be added directly from the Supabase Authentication Dashboard.
+              🔐 <strong>Team Access Only</strong><br />
+              All team members share the same live workspace. New accounts must be created in the Supabase Authentication Dashboard.
             </p>
           </div>
         </div>
@@ -2465,6 +2490,7 @@ function AuthScreen() {
     </div>
   );
 }
+
 
 /* ═══════════════════════ SMALL COMPONENTS ═══════════════════════ */
 
@@ -3963,7 +3989,7 @@ function DuplicateReviewModal({ session, duplicateGroups, setLeads, onClose, pus
     if (!confirm("Are you sure you want to permanently delete this duplicate lead record? This action cannot be undone.")) return;
     setDeletingId(id);
     try {
-      const { error } = await supabase.from("leads").delete().eq("id", id).eq("user_id", session.user.id);
+      const { error } = await supabase.from("leads").delete().eq("id", id);
       if (error) throw error;
       setLeads((p) => p.filter((l) => l.id !== id));
       push("Duplicate lead deleted ✓", "success");
