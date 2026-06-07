@@ -1359,7 +1359,7 @@ export default function App() {
           {/* ══ RIGHT: LEADS LIST ══ */}
           <div className="space-y-4">
 
-            {/* Outbound To-Do Queue Panel */}
+            {/* Today's Call List Panel */}
             <OutboundToDoQueue
               leads={categoryFilteredLeads}
               onTriggerResolution={triggerCallResolution}
@@ -1377,6 +1377,10 @@ export default function App() {
               deleteRecording={deleteRecording}
               downloadRecording={downloadRecording}
               savingActivity={savingActivity}
+              selectedCategories={selectedCategories}
+              setSelectedCategories={setSelectedCategories}
+              toggleCategory={toggleCategory}
+              categoryStats={categoryStats}
             />
 
             {/* Search bar + filter */}
@@ -1409,60 +1413,6 @@ export default function App() {
                   </button>
                 ))}
               </div>
-
-              {/* Category Filter Section */}
-              {Object.keys(categoryStats).length > 0 && (
-                <div className="mt-4 border-t border-white/[0.06] pt-3.5">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500">
-                      Filter by Category
-                    </span>
-                    {selectedCategories.length > 0 && (
-                      <button
-                        onClick={() => setSelectedCategories([])}
-                        className="text-[9px] font-bold text-cyan-400 hover:text-cyan-300 transition cursor-pointer"
-                      >
-                        Reset Filter
-                      </button>
-                    )}
-                  </div>
-                  <div className="flex flex-wrap gap-1.5">
-                    <button
-                      onClick={() => setSelectedCategories([])}
-                      className={`rounded-full border px-3 py-1.5 text-[9px] font-bold transition active:scale-95 cursor-pointer ${
-                        selectedCategories.length === 0
-                          ? "border-cyan-400 bg-cyan-500/10 text-cyan-300 font-extrabold shadow-[0_0_12px_rgba(6,182,212,0.15)]"
-                          : "border-white/[0.06] bg-white/[0.05] text-zinc-400 hover:bg-white/10 hover:text-white"
-                      }`}
-                    >
-                      🏷️ All Categories
-                    </button>
-                    {Object.entries(categoryStats)
-                      .sort((a, b) => a[0].localeCompare(b[0]))
-                      .map(([cat, count]) => {
-                        const isActive = selectedCategories.includes(cat);
-                        return (
-                          <button
-                            key={cat}
-                            onClick={() => toggleCategory(cat)}
-                            className={`rounded-full border px-3 py-1.5 text-[9px] font-bold transition active:scale-95 cursor-pointer flex items-center gap-1 ${
-                              isActive
-                                ? "border-cyan-400 bg-cyan-500/15 text-cyan-200 font-black shadow-[0_0_12px_rgba(6,182,212,0.12)]"
-                                : "border-white/[0.06] bg-white/[0.05] text-zinc-400 hover:bg-white/10 hover:text-white"
-                            }`}
-                          >
-                            <span>{cat}</span>
-                            <span className={`rounded-full px-1.5 py-0.25 text-[8px] font-bold ${
-                              isActive ? "bg-cyan-400/20 text-cyan-300" : "bg-white/5 text-zinc-500"
-                            }`}>
-                              {count}
-                            </span>
-                          </button>
-                        );
-                      })}
-                  </div>
-                </div>
-              )}
             </div>
 
             {/* Duplicate phone warning banner */}
@@ -4087,6 +4037,10 @@ function OutboundToDoQueue({
   deleteRecording,
   downloadRecording,
   savingActivity,
+  selectedCategories,
+  setSelectedCategories,
+  toggleCategory,
+  categoryStats,
 }) {
   const lists = useMemo(() => {
     const today = todayStr();
@@ -4120,27 +4074,81 @@ function OutboundToDoQueue({
       {/* Header and Quick dialer toggle */}
       <div className="mb-4 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
         <div>
-          <span className="text-[9px] font-black uppercase tracking-[0.2em] text-cyan-400">Campaign Outreach Queue</span>
+          <span className="text-[9px] font-black uppercase tracking-[0.2em] text-cyan-400">Daily To-Do List</span>
           <h2 className="text-lg font-black text-white flex items-center gap-2 mt-0.5">
-            ⚡ Outbound Dialer Campaign
+            📞 Today to Call
           </h2>
-          <p className="text-[10px] text-zinc-500 mt-0.5">Select a category list below to dial prospects</p>
+          <p className="text-[10px] text-zinc-500 mt-0.5">Choose a tab below to start calling. Toggle business types to filter.</p>
         </div>
         <div className="flex items-center gap-2">
           {currentList.length > 0 && (
             <button
               onClick={() => {
                 onSelect(currentList[0]);
-                push(`Dialer Assist activated for ${currentList[0].businessName}! ⚡`, "info");
+                push(`Calling started for ${currentList[0].businessName}! 📞`, "info");
               }}
               className="flex items-center gap-1 rounded-xl bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-400 hover:to-blue-400 text-white px-3 py-1.5 text-xs font-black transition active:scale-95 shadow-md shadow-cyan-950/40 cursor-pointer"
-              title="Focus and start calling the first lead in the active tab queue"
+              title="Start calling the first person in this list"
             >
-              ⚡ Start Dialer Assist
+              📞 Start Calling
             </button>
           )}
         </div>
       </div>
+
+      {/* Business Type Filters */}
+      {categoryStats && Object.keys(categoryStats).length > 0 && (
+        <div className="mb-4 border-b border-white/[0.05] pb-3.5">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">
+              Filter by Business Type
+            </span>
+            {selectedCategories.length > 0 && (
+              <button
+                onClick={() => setSelectedCategories([])}
+                className="text-[9px] font-bold text-cyan-400 hover:text-cyan-300 transition cursor-pointer"
+              >
+                Show All
+              </button>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            <button
+              onClick={() => setSelectedCategories([])}
+              className={`rounded-full border px-3 py-1.5 text-[9px] font-bold transition active:scale-95 cursor-pointer ${
+                selectedCategories.length === 0
+                  ? "border-cyan-400 bg-cyan-500/10 text-cyan-300 font-extrabold shadow-[0_0_12px_rgba(6,182,212,0.15)]"
+                  : "border-white/[0.06] bg-white/[0.05] text-zinc-400 hover:bg-white/10 hover:text-white"
+              }`}
+            >
+              🏷️ All Types
+            </button>
+            {Object.entries(categoryStats)
+              .sort((a, b) => a[0].localeCompare(b[0]))
+              .map(([cat, count]) => {
+                const isActive = selectedCategories.includes(cat);
+                return (
+                  <button
+                    key={cat}
+                    onClick={() => toggleCategory(cat)}
+                    className={`rounded-full border px-3 py-1.5 text-[9px] font-bold transition active:scale-95 cursor-pointer flex items-center gap-1 ${
+                      isActive
+                        ? "border-cyan-400 bg-cyan-500/15 text-cyan-200 font-black shadow-[0_0_12px_rgba(6,182,212,0.12)]"
+                        : "border-white/[0.06] bg-white/[0.04] text-zinc-400 hover:bg-white/10 hover:text-white"
+                    }`}
+                  >
+                    {cat}
+                    <span className={`rounded-full px-1.5 py-0.2 text-[8px] font-black ${
+                      isActive ? "bg-cyan-500/30 text-white" : "bg-white/[0.06] text-zinc-500"
+                    }`}>
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+          </div>
+        </div>
+      )}
 
       {/* Tab selectors for lists */}
       <div className="mb-4 flex flex-wrap gap-1.5 border-b border-white/[0.05] pb-3">
@@ -4173,8 +4181,8 @@ function OutboundToDoQueue({
       {currentList.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-white/[0.05] bg-black/25 p-8 text-center flex flex-col items-center justify-center gap-2">
           <span className="text-2xl animate-bounce">🎉</span>
-          <p className="text-xs font-black text-zinc-400">All calls in this queue completed!</p>
-          <p className="text-[9px] text-zinc-600">Great job! Toggle other categories or import new leads to continue outreach.</p>
+          <p className="text-xs font-black text-zinc-400">All calls in this list are done!</p>
+          <p className="text-[9px] text-zinc-600">Great job! Select another business type or upload new contacts to continue calling.</p>
         </div>
       ) : (
         <div className="space-y-2.5 max-h-[310px] overflow-y-auto pr-1">
@@ -4360,9 +4368,9 @@ function CallResolutionModal({ lead, type, preSelectOption, onClose, onResolve }
         
         {/* Title */}
         <div className="mb-4">
-          <span className="text-[10px] font-black uppercase tracking-[0.2em] text-cyan-400">Outbound Call Logger</span>
+          <span className="text-[10px] font-black uppercase tracking-[0.2em] text-cyan-400">Save Call Details</span>
           <h2 className="text-xl font-black text-white mt-1">
-            {type === "interested" ? "🎉 Wants Website / Demo" : "⏳ Call Rescheduler Queue"}
+            {type === "interested" ? "🎉 Wants Website / Demo" : "⏳ Pick Callback Time"}
           </h2>
           <p className="text-xs text-zinc-500 mt-1">Log outcome details for <strong className="text-zinc-300">{lead.businessName}</strong></p>
         </div>
@@ -4372,7 +4380,7 @@ function CallResolutionModal({ lead, type, preSelectOption, onClose, onResolve }
             <>
               {/* Interested / Wants Website form fields */}
               <div className="space-y-3">
-                <Field label="Verify Contact Email">
+                <Field label="Contact Email">
                   <input
                     type="email"
                     value={email}
@@ -4383,7 +4391,7 @@ function CallResolutionModal({ lead, type, preSelectOption, onClose, onResolve }
                   />
                 </Field>
 
-                <Field label="Outbound Call Notes">
+                <Field label="Call Notes">
                   <textarea
                     value={notes}
                     onChange={(e) => setNotes(e.target.value)}
@@ -4398,15 +4406,15 @@ function CallResolutionModal({ lead, type, preSelectOption, onClose, onResolve }
             <>
               {/* Reschedule option badges */}
               <div className="space-y-3">
-                <span className="block text-[10px] font-black uppercase tracking-wider text-zinc-400">Select Callback Reason</span>
+                <span className="block text-[10px] font-black uppercase tracking-wider text-zinc-400">What happened during this call?</span>
                 <div className="grid grid-cols-2 gap-2">
                   {[
-                    { key: "no_answer", label: "🚫 Didn't Answer (Tomorrow)", desc: "Status → No Answer" },
-                    { key: "vm", label: "📘 Left Voicemail (Tomorrow)", desc: "Status → Follow Up" },
-                    { key: "busy", label: "👥 Busy / Call Tomorrow", desc: "Status → Follow Up" },
-                    { key: "today", label: "⏳ Call Back Later Today", desc: "Status → Follow Up" },
-                    { key: "custom", label: "📅 Custom Date Planner", desc: "Select custom date" },
-                    { key: "no", label: "🗑 Archive / Not Interested", desc: "Status → No" },
+                    { key: "no_answer", label: "🚫 No Answer (Call Tomorrow)", desc: "Call tomorrow" },
+                    { key: "vm", label: "📘 Left Voicemail (Call Tomorrow)", desc: "Call tomorrow" },
+                    { key: "busy", label: "👥 Busy / Call Tomorrow", desc: "Call tomorrow" },
+                    { key: "today", label: "⏳ Call Back Later Today", desc: "Call back today" },
+                    { key: "custom", label: "📅 Pick a Specific Day", desc: "Choose callback date" },
+                    { key: "no", label: "🗑 Not Interested", desc: "Archive contact" },
                   ].map((opt) => (
                     <button
                       key={opt.key}
@@ -4437,7 +4445,7 @@ function CallResolutionModal({ lead, type, preSelectOption, onClose, onResolve }
                   </Field>
                 )}
 
-                <Field label="Call outcome / Reschedule Notes">
+                <Field label="Call Notes">
                   <textarea
                     value={notes}
                     onChange={(e) => setNotes(e.target.value)}
@@ -4471,7 +4479,7 @@ function CallResolutionModal({ lead, type, preSelectOption, onClose, onResolve }
                 </>
               ) : (
                 <>
-                  {type === "interested" ? "✓ Log & Start Demo Campaign" : "🔄 Save & Reschedule"}
+                  {type === "interested" ? "✓ Save Details" : "🔄 Save Callback Time"}
                 </>
               )}
             </button>
