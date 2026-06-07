@@ -26,7 +26,7 @@ const WEBSITE_OPTIONS   = ["Unknown", "No website", "Has website", "Bad website"
 const NEXT_ACTION_OPTIONS = ["Call", "Follow up", "Send demo", "Waiting", "Done"];
 
 const CATEGORIES = [
-  "Auto Detailing","Barber Shop","Hair Salon / Spa","Restaurant","Food Truck",
+  "Auto Detailing","Barber Shop","Hair Salon / Spa","Photography / Video","Restaurant","Food Truck",
   "Roofing / Contractor","Cleaning Service","Landscaping","Mechanic / Auto Repair",
   "Towing Company","Tattoo / Piercing","Gym / Fitness","Dental / Medical",
   "Daycare","Real Estate","Handyman","Moving Company","Other",
@@ -212,6 +212,13 @@ export default function App() {
   /* Search & Filter */
   const [query, setQuery]           = useState("");
   const [filter, setFilter]         = useState("all");
+  const [selectedCategories, setSelectedCategories] = useState([]);
+
+  const toggleCategory = useCallback((cat) => {
+    setSelectedCategories((prev) =>
+      prev.includes(cat) ? prev.filter((c) => c !== cat) : [...prev, cat]
+    );
+  }, []);
 
   /* Focus / detail drawer */
   const [focused, setFocused]       = useState(null);
@@ -613,27 +620,41 @@ export default function App() {
     return leads.find((l) => l.phone_normalized === d) ?? null;
   }, [query, leads]);
 
+  const categoryStats = useMemo(() => {
+    const counts = {};
+    leads.forEach((l) => {
+      const cat = l.category || "Other";
+      counts[cat] = (counts[cat] || 0) + 1;
+    });
+    return counts;
+  }, [leads]);
+
+  const categoryFilteredLeads = useMemo(() => {
+    if (selectedCategories.length === 0) return leads;
+    return leads.filter((l) => selectedCategories.includes(l.category || "Other"));
+  }, [leads, selectedCategories]);
+
   const stats = useMemo(() => {
     const today = todayStr();
     const tomorrow = tomorrowStr();
     return {
-      total:      leads.length,
-      notCalled:  leads.filter((l) => l.status === "not_called").length,
-      interested: leads.filter((l) => l.status === "interested").length,
-      needsDemo:  leads.filter((l) => l.demoStatus === "needs_demo").length,
-      due:        leads.filter((l) => isDue(l.nextFollowUp) && l.status !== "no" && l.status !== "closed").length,
-      calledToday:leads.filter((l) => l.lastContacted === today).length,
-      callLater:  leads.filter((l) => l.nextFollowUp === today && l.status !== "no" && l.status !== "closed").length,
-      tomorrow:   leads.filter((l) => l.nextFollowUp === tomorrow && l.status !== "no" && l.status !== "closed").length,
-      demoSent:   leads.filter((l) => l.demoStatus === "sent" || l.status === "demo_sent").length,
-      noWebsite:  leads.filter((l) => l.websiteStatus === "No website").length,
-      badWebsite: leads.filter((l) => l.websiteStatus === "Bad website").length,
-      socialOnly: leads.filter((l) => l.websiteStatus === "Social media only").length,
-      no:         leads.filter((l) => l.status === "no").length,
-      maybe:      leads.filter((l) => l.status === "maybe").length,
-      followUp:   leads.filter((l) => l.status === "follow_up").length,
+      total:      categoryFilteredLeads.length,
+      notCalled:  categoryFilteredLeads.filter((l) => l.status === "not_called").length,
+      interested: categoryFilteredLeads.filter((l) => l.status === "interested").length,
+      needsDemo:  categoryFilteredLeads.filter((l) => l.demoStatus === "needs_demo").length,
+      due:        categoryFilteredLeads.filter((l) => isDue(l.nextFollowUp) && l.status !== "no" && l.status !== "closed").length,
+      calledToday:categoryFilteredLeads.filter((l) => l.lastContacted === today).length,
+      callLater:  categoryFilteredLeads.filter((l) => l.nextFollowUp === today && l.status !== "no" && l.status !== "closed").length,
+      tomorrow:   categoryFilteredLeads.filter((l) => l.nextFollowUp === tomorrow && l.status !== "no" && l.status !== "closed").length,
+      demoSent:   categoryFilteredLeads.filter((l) => l.demoStatus === "sent" || l.status === "demo_sent").length,
+      noWebsite:  categoryFilteredLeads.filter((l) => l.websiteStatus === "No website").length,
+      badWebsite: categoryFilteredLeads.filter((l) => l.websiteStatus === "Bad website").length,
+      socialOnly: categoryFilteredLeads.filter((l) => l.websiteStatus === "Social media only").length,
+      no:         categoryFilteredLeads.filter((l) => l.status === "no").length,
+      maybe:      categoryFilteredLeads.filter((l) => l.status === "maybe").length,
+      followUp:   categoryFilteredLeads.filter((l) => l.status === "follow_up").length,
     };
-  }, [leads]);
+  }, [categoryFilteredLeads]);
 
   const duplicateGroups = useMemo(() => {
     const phoneGroups = {};
@@ -709,7 +730,7 @@ export default function App() {
     const s = norm(query);
     const isPhone = /\d/.test(query);
     const phoneD  = query.replace(/\D/g,"");
-    return leads
+    return categoryFilteredLeads
       .filter((l) => {
         if (filter === "all")         return true;
         if (filter === "call_today")  return isDue(l.nextFollowUp) && l.status !== "no" && l.status !== "closed";
@@ -729,7 +750,7 @@ export default function App() {
         return [l.businessName, l.address, l.category, l.notes, l.email].some((f) => norm(f).includes(s));
       })
       .sort((a, b) => (isDue(b.nextFollowUp) ? 1 : 0) - (isDue(a.nextFollowUp) ? 1 : 0));
-  }, [leads, query, filter, dupSearchLead]);
+  }, [categoryFilteredLeads, query, filter, dupSearchLead]);
 
   /* ── Form helpers ── */
   function upForm(field, val) {
@@ -1409,7 +1430,7 @@ export default function App() {
 
             {/* Outbound To-Do Queue Panel */}
             <OutboundToDoQueue
-              leads={leads}
+              leads={categoryFilteredLeads}
               onTriggerResolution={triggerCallResolution}
               onSelect={setFocused}
               push={push}
@@ -1457,6 +1478,60 @@ export default function App() {
                   </button>
                 ))}
               </div>
+
+              {/* Category Filter Section */}
+              {Object.keys(categoryStats).length > 0 && (
+                <div className="mt-4 border-t border-white/[0.06] pt-3.5">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500">
+                      Filter by Category
+                    </span>
+                    {selectedCategories.length > 0 && (
+                      <button
+                        onClick={() => setSelectedCategories([])}
+                        className="text-[9px] font-bold text-cyan-400 hover:text-cyan-300 transition cursor-pointer"
+                      >
+                        Reset Filter
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    <button
+                      onClick={() => setSelectedCategories([])}
+                      className={`rounded-full border px-3 py-1.5 text-[9px] font-bold transition active:scale-95 cursor-pointer ${
+                        selectedCategories.length === 0
+                          ? "border-cyan-400 bg-cyan-500/10 text-cyan-300 font-extrabold shadow-[0_0_12px_rgba(6,182,212,0.15)]"
+                          : "border-white/[0.06] bg-white/[0.05] text-zinc-400 hover:bg-white/10 hover:text-white"
+                      }`}
+                    >
+                      🏷️ All Categories
+                    </button>
+                    {Object.entries(categoryStats)
+                      .sort((a, b) => a[0].localeCompare(b[0]))
+                      .map(([cat, count]) => {
+                        const isActive = selectedCategories.includes(cat);
+                        return (
+                          <button
+                            key={cat}
+                            onClick={() => toggleCategory(cat)}
+                            className={`rounded-full border px-3 py-1.5 text-[9px] font-bold transition active:scale-95 cursor-pointer flex items-center gap-1 ${
+                              isActive
+                                ? "border-cyan-400 bg-cyan-500/15 text-cyan-200 font-black shadow-[0_0_12px_rgba(6,182,212,0.12)]"
+                                : "border-white/[0.06] bg-white/[0.05] text-zinc-400 hover:bg-white/10 hover:text-white"
+                            }`}
+                          >
+                            <span>{cat}</span>
+                            <span className={`rounded-full px-1.5 py-0.25 text-[8px] font-bold ${
+                              isActive ? "bg-cyan-400/20 text-cyan-300" : "bg-white/5 text-zinc-500"
+                            }`}>
+                              {count}
+                            </span>
+                          </button>
+                        );
+                      })}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Duplicate phone warning banner */}
@@ -3735,6 +3810,7 @@ const CATEGORY_KEYWORD_MAP = [
   { category: "Auto Detailing",        keywords: ["auto detail", "car detail", "car wash", "detailing"] },
   { category: "Barber Shop",           keywords: ["barber", "barbershop", "men's cut", "haircut"] },
   { category: "Hair Salon / Spa",      keywords: ["hair salon", "nail salon", "spa", "beauty salon", "hair studio", "hair care", "salon"] },
+  { category: "Photography / Video",   keywords: ["photo", "photograph", "video", "media", "camera", "portrait", "studio", "creative"] },
   { category: "Restaurant",            keywords: ["restaurant", "diner", "cafe", "bistro", "eatery", "pizzeria", "pizza", "sushi", "steakhouse", "seafood", "burger", "fast food", "taco", "bbq", "grill"] },
   { category: "Food Truck",            keywords: ["food truck", "mobile food", "catering truck"] },
   { category: "Roofing / Contractor",  keywords: ["roof", "roofing", "contractor", "siding", "gutters", "gutter", "remodeling", "renovation", "construction", "builder", "carpenter", "flooring", "tile", "painting", "plumber", "plumbing", "electrician", "hvac", "handyman", "masonry"] },
