@@ -13,7 +13,6 @@ import { supabase } from "./supabaseClient";
 const STATUS_OPTIONS = [
   { key: "not_called", label: "Not Called", color: "bg-blue-500", soft: "bg-blue-500/15 text-blue-200 border-blue-400/30" },
   { key: "interested", label: "Yes / Interested", color: "bg-green-500", soft: "bg-green-500/15 text-green-200 border-green-400/30" },
-  { key: "no", label: "No", color: "bg-red-500", soft: "bg-red-500/15 text-red-300 border-red-400/30" },
   { key: "maybe", label: "Maybe", color: "bg-yellow-400", soft: "bg-yellow-400/15 text-yellow-100 border-yellow-300/30" },
   { key: "follow_up", label: "Follow Up", color: "bg-orange-500", soft: "bg-orange-500/15 text-orange-100 border-orange-400/30" },
   { key: "no_answer", label: "No Answer", color: "bg-slate-500", soft: "bg-slate-500/15 text-slate-200 border-slate-400/30" },
@@ -948,6 +947,20 @@ export default function App() {
 
   /* ── Change status ── */
   async function changeStatus(id, newStatus) {
+    if (newStatus === "delete" || newStatus === "no") {
+      if (!confirm("Permanently delete this lead? This cannot be undone.")) return;
+      try {
+        const { error } = await supabase.from("leads").delete().eq("id", id);
+        if (error) throw error;
+        setLeads((p) => p.filter((l) => l.id !== id));
+        if (focused?.id === id) setFocused(null);
+        push("Lead deleted permanently ✓", "success");
+      } catch (e) {
+        console.error("Delete error:", e);
+        push("Failed to delete lead: " + e.message, "error");
+      }
+      return;
+    }
     const today = todayStr();
     try {
       const { error: e1 } = await supabase.from("leads")
@@ -1103,6 +1116,23 @@ export default function App() {
     const lead = leads.find((l) => l.id === id);
     if (!lead) return;
 
+    if (status === "no" || status === "delete") {
+      try {
+        const { error } = await supabase.from("leads").delete().eq("id", id);
+        if (error) throw error;
+        setLeads((p) => p.filter((l) => l.id !== id));
+        if (focused?.id === id) setFocused(null);
+        push("Lead deleted permanently ✓", "success");
+        setResolutionLead(null);
+        setResolutionType(null);
+        setResolutionPreSelect(null);
+      } catch (e) {
+        console.error("Call resolution delete error:", e);
+        push("Failed to delete lead: " + e.message, "error");
+      }
+      return;
+    }
+
     let nextFollowUpDate = null;
     if (customDate) {
       nextFollowUpDate = customDate;
@@ -1203,7 +1233,6 @@ export default function App() {
     { key: "demo_sent", label: `✓ Demo Sent (${stats.demoSent})` },
     { key: "not_called", label: `Not Called (${stats.notCalled})` },
     { key: "interested", label: `Yes ✓ (${stats.interested})` },
-    { key: "no", label: `No ✗ (${stats.no})` },
     { key: "maybe", label: `Maybe (${stats.maybe})` },
     { key: "follow_up", label: `Follow Up (${stats.followUp})` },
     { key: "no_website", label: `No Website (${stats.noWebsite})` },
@@ -1236,8 +1265,8 @@ export default function App() {
       <div className="fixed bottom-4 left-1/2 -translate-x-1/2 sm:left-auto sm:right-6 sm:translate-x-0 sm:bottom-6 z-[99] flex flex-col gap-2 pointer-events-none w-[calc(100vw-2rem)] sm:w-auto max-w-sm">
         {toasts.map((t) => (
           <div key={t.id} className={`pointer-events-auto flex items-center gap-2.5 rounded-2xl border px-4 py-3 text-xs font-bold shadow-2xl backdrop-blur-xl animate-[slideUp_0.25s_ease] ${t.type === "success" ? "border-emerald-400/30 bg-emerald-950/80 text-emerald-300" :
-              t.type === "error" ? "border-red-500/30 bg-red-950/80 text-red-300" :
-                "border-cyan-400/30 bg-zinc-950/90 text-cyan-200"
+            t.type === "error" ? "border-red-500/30 bg-red-950/80 text-red-300" :
+              "border-cyan-400/30 bg-zinc-950/90 text-cyan-200"
             }`}>
             {t.type === "success" ? "✓" : t.type === "error" ? "✗" : "·"} {t.msg}
           </div>
@@ -1413,8 +1442,8 @@ export default function App() {
                         type="button"
                         onClick={() => upForm("demoStatus", opt.key)}
                         className={`rounded-xl border py-2 text-[10px] font-bold text-center transition active:scale-95 cursor-pointer ${form.demoStatus === opt.key
-                            ? "border-white bg-white text-zinc-950 font-black shadow-lg"
-                            : opt.cls
+                          ? "border-white bg-white text-zinc-950 font-black shadow-lg"
+                          : opt.cls
                           }`}
                       >
                         {opt.label}
@@ -1490,6 +1519,7 @@ export default function App() {
                 leads={categoryFilteredLeads}
                 onTriggerResolution={triggerCallResolution}
                 onSelect={setFocused}
+                onDelete={deleteLead}
                 push={push}
                 recordingLeadId={recordingLeadId}
                 recording={recording}
@@ -1531,8 +1561,8 @@ export default function App() {
                   {filterBtns.map((b) => (
                     <button key={b.key} onClick={() => setFilter(b.key === filter ? "all" : b.key)}
                       className={`rounded-full border px-3 py-1.5 text-[10px] font-bold transition active:scale-95 ${filter === b.key
-                          ? "border-white/25 bg-white text-zinc-900"
-                          : "border-white/[0.06] bg-white/[0.05] text-zinc-400 hover:bg-white/10 hover:text-white"
+                        ? "border-white/25 bg-white text-zinc-900"
+                        : "border-white/[0.06] bg-white/[0.05] text-zinc-400 hover:bg-white/10 hover:text-white"
                         }`}>
                       {b.label}
                     </button>
@@ -1984,8 +2014,8 @@ function FocusDrawer({
                   key={opt.key}
                   onClick={() => onDemoStatus(lead.id, opt.key)}
                   className={`rounded-xl px-2 py-3 text-[10px] font-black text-center transition active:scale-95 cursor-pointer ${lead.demoStatus === opt.key
-                      ? "bg-white text-zinc-950 font-black shadow-lg hover:bg-white"
-                      : opt.cls
+                    ? "bg-white text-zinc-950 font-black shadow-lg hover:bg-white"
+                    : opt.cls
                     }`}
                 >
                   {opt.label}
@@ -2168,7 +2198,7 @@ function LeadCard({ lead, onStatus, onDemoStatus, onFollowUp, onEdit, onDelete, 
 
   const quickActions = [
     { key: "interested", label: "Interested", cls: "bg-green-500/10 text-green-300 border-green-500/20 hover:bg-green-500/20" },
-    { key: "no", label: "No", cls: "bg-red-500/10 text-red-300 border-red-500/20 hover:bg-red-500/20" },
+    { key: "delete", label: "Delete 🗑", cls: "bg-red-500/10 text-red-300 border-red-500/20 hover:bg-red-500/20" },
     { key: "maybe", label: "Maybe", cls: "bg-yellow-400/10 text-yellow-200 border-yellow-400/20 hover:bg-yellow-400/20" },
     { key: "no_answer", label: "No Answer", cls: "bg-slate-500/10 text-slate-300 border-slate-400/20 hover:bg-slate-500/20" },
     { key: "demo_sent", label: "Demo Sent", cls: "bg-purple-500/10 text-purple-200 border-purple-500/20 hover:bg-purple-500/20" },
@@ -2196,10 +2226,10 @@ function LeadCard({ lead, onStatus, onDemoStatus, onFollowUp, onEdit, onDelete, 
               {/* Website status badges */}
               {lead.websiteStatus && (
                 <span className={`rounded-full border px-2 py-0.5 text-[9px] font-black tracking-wide uppercase ${lead.websiteStatus === "No website" ? "border-red-500/30 bg-red-500/10 text-red-400" :
-                    lead.websiteStatus === "Social media only" ? "border-purple-500/30 bg-purple-500/10 text-purple-300 animate-pulse" :
-                      lead.websiteStatus === "Has website" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300" :
-                        lead.websiteStatus === "Bad website" ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-300" :
-                          "border-zinc-700 bg-zinc-800/30 text-zinc-400"
+                  lead.websiteStatus === "Social media only" ? "border-purple-500/30 bg-purple-500/10 text-purple-300 animate-pulse" :
+                    lead.websiteStatus === "Has website" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-300" :
+                      lead.websiteStatus === "Bad website" ? "border-yellow-500/30 bg-yellow-500/10 text-yellow-300" :
+                        "border-zinc-700 bg-zinc-800/30 text-zinc-400"
                   }`}>
                   {lead.websiteStatus === "No website" ? "🚫 No Website" :
                     lead.websiteStatus === "Social media only" ? "📱 Socials Only" :
@@ -2234,9 +2264,15 @@ function LeadCard({ lead, onStatus, onDemoStatus, onFollowUp, onEdit, onDelete, 
             {lead.category && <span className="inline-block rounded-md bg-zinc-900 border border-white/[0.04] px-1.5 py-0.5 text-[9px] font-extrabold text-zinc-400 mt-1 uppercase tracking-widest">{lead.category}</span>}
           </div>
         </div>
-        <div className="flex gap-1 shrink-0">
+        <div className="flex gap-1 shrink-0 items-center">
           <button onClick={() => onEdit(lead)} title="Edit" className="rounded-xl p-2 bg-white/[0.04] hover:bg-white/10 text-zinc-500 hover:text-white transition"><Edit3 size={13} /></button>
-          <button onClick={() => onDelete(lead.id)} title="Delete" className="rounded-xl p-2 bg-red-500/[0.04] hover:bg-red-500/15 text-red-500 hover:text-red-300 transition"><Trash2 size={13} /></button>
+          <button
+            onClick={() => onDelete(lead.id)}
+            className="flex items-center gap-1 rounded-xl bg-red-500/10 border border-red-500/20 px-2.5 py-1.5 text-[10px] font-black text-red-400 hover:bg-red-500/20 transition cursor-pointer"
+            title="Delete lead permanently"
+          >
+            <Trash2 size={11} /> Delete
+          </button>
         </div>
       </div>
 
@@ -2388,8 +2424,8 @@ function LeadCard({ lead, onStatus, onDemoStatus, onFollowUp, onEdit, onDelete, 
             <button
               onClick={() => onDemoStatus(lead.id, lead.demoStatus === "needs_demo" ? "not_sent" : "needs_demo")}
               className={`rounded-lg px-2.5 py-1 text-[9px] font-black uppercase tracking-wider transition active:scale-95 cursor-pointer ${lead.demoStatus === "needs_demo"
-                  ? "bg-fuchsia-500 text-white font-black shadow-md shadow-fuchsia-950/20"
-                  : "bg-white/[0.04] text-fuchsia-300 hover:bg-fuchsia-500/10 border border-fuchsia-500/20"
+                ? "bg-fuchsia-500 text-white font-black shadow-md shadow-fuchsia-950/20"
+                : "bg-white/[0.04] text-fuchsia-300 hover:bg-fuchsia-500/10 border border-fuchsia-500/20"
                 }`}
             >
               Needs Demo 📤
@@ -2397,8 +2433,8 @@ function LeadCard({ lead, onStatus, onDemoStatus, onFollowUp, onEdit, onDelete, 
             <button
               onClick={() => onDemoStatus(lead.id, lead.demoStatus === "sent" ? "not_sent" : "sent")}
               className={`rounded-lg px-2.5 py-1 text-[9px] font-black uppercase tracking-wider transition active:scale-95 cursor-pointer ${lead.demoStatus === "sent"
-                  ? "bg-emerald-500 text-white font-black shadow-md shadow-emerald-950/20"
-                  : "bg-white/[0.04] text-emerald-300 hover:bg-emerald-500/10 border border-emerald-500/20"
+                ? "bg-emerald-500 text-white font-black shadow-md shadow-emerald-950/20"
+                : "bg-white/[0.04] text-emerald-300 hover:bg-emerald-500/10 border border-emerald-500/20"
                 }`}
             >
               Sent ✓
@@ -2632,8 +2668,8 @@ function InlineRecorderController({
             type="button"
             onClick={() => setShowTranscript(!showTranscript)}
             className={`rounded p-1 transition cursor-pointer active:scale-95 shrink-0 ${showTranscript
-                ? "bg-cyan-500/25 text-cyan-300 border border-cyan-400/30"
-                : "bg-emerald-500/10 hover:bg-emerald-500/25 text-emerald-400"
+              ? "bg-cyan-500/25 text-cyan-300 border border-cyan-400/30"
+              : "bg-emerald-500/10 hover:bg-emerald-500/25 text-emerald-400"
               }`}
             title="Toggle call transcription"
           >
@@ -2696,10 +2732,10 @@ function InlineRecorderController({
         onClick={() => setExpanded(!expanded)}
         title={isAnotherLeadRecording ? "Another recording is currently active" : expanded ? "Close recording setup" : "Start call recording"}
         className={`shrink-0 rounded-lg p-1.5 transition ${isAnotherLeadRecording
-            ? "bg-white/[0.01] text-zinc-700 cursor-not-allowed opacity-30"
-            : expanded
-              ? "bg-red-500/20 text-red-400"
-              : "bg-white/[0.05] text-zinc-500 hover:bg-white/10 hover:text-white"
+          ? "bg-white/[0.01] text-zinc-700 cursor-not-allowed opacity-30"
+          : expanded
+            ? "bg-red-500/20 text-red-400"
+            : "bg-white/[0.05] text-zinc-500 hover:bg-white/10 hover:text-white"
           }`}
       >
         <Mic size={11} />
@@ -3139,8 +3175,8 @@ function BulkImportModal({ session, loadedLeads, setLeads, onClose, push }) {
             <div
               key={s.step}
               className={`flex-1 py-3 text-center font-bold border-b-2 transition ${importStep === s.step
-                  ? "border-cyan-400 text-cyan-400 bg-cyan-500/5 font-black"
-                  : "border-transparent text-zinc-500"
+                ? "border-cyan-400 text-cyan-400 bg-cyan-500/5 font-black"
+                : "border-transparent text-zinc-500"
                 }`}
             >
               {s.label}
@@ -3193,8 +3229,8 @@ function BulkImportModal({ session, loadedLeads, setLeads, onClose, push }) {
                   onDrop={onDrop}
                   onClick={() => fileInputRef.current.click()}
                   className={`border-2 border-dashed rounded-3xl p-8 text-center cursor-pointer transition flex flex-col items-center justify-center gap-2 ${dragActive
-                      ? "border-cyan-400 bg-cyan-400/5"
-                      : "border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/20"
+                    ? "border-cyan-400 bg-cyan-400/5"
+                    : "border-white/[0.08] bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/20"
                     }`}
                 >
                   <input
@@ -3482,12 +3518,12 @@ function BulkImportModal({ session, loadedLeads, setLeads, onClose, push }) {
                       <div
                         key={lead.rowIndex}
                         className={`relative rounded-2xl border px-4 py-3 transition-all ${isRemoved
-                            ? "opacity-40 border-zinc-700/30 bg-zinc-900/20 scale-[0.99]"
-                            : isSkipped
-                              ? "border-yellow-400/15 bg-yellow-400/[0.02]"
-                              : lead.hasNoPhone
-                                ? "border-orange-500/25 bg-orange-500/[0.03]"
-                                : "border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.03]"
+                          ? "opacity-40 border-zinc-700/30 bg-zinc-900/20 scale-[0.99]"
+                          : isSkipped
+                            ? "border-yellow-400/15 bg-yellow-400/[0.02]"
+                            : lead.hasNoPhone
+                              ? "border-orange-500/25 bg-orange-500/[0.03]"
+                              : "border-white/[0.06] bg-white/[0.02] hover:bg-white/[0.03]"
                           }`}
                       >
                         {/* Row header: name + badges + delete */}
@@ -4239,6 +4275,7 @@ function OutboundToDoQueue({
   leads,
   onTriggerResolution,
   onSelect,
+  onDelete,
   push,
   recordingLeadId,
   recording,
@@ -4331,8 +4368,8 @@ function OutboundToDoQueue({
             <button
               onClick={() => setSelectedCategories([])}
               className={`rounded-full border px-3 py-1.5 text-[9px] font-bold transition active:scale-95 cursor-pointer ${selectedCategories.length === 0
-                  ? "border-cyan-400 bg-cyan-500/10 text-cyan-300 font-extrabold shadow-[0_0_12px_rgba(6,182,212,0.15)]"
-                  : "border-white/[0.06] bg-white/[0.05] text-zinc-400 hover:bg-white/10 hover:text-white"
+                ? "border-cyan-400 bg-cyan-500/10 text-cyan-300 font-extrabold shadow-[0_0_12px_rgba(6,182,212,0.15)]"
+                : "border-white/[0.06] bg-white/[0.05] text-zinc-400 hover:bg-white/10 hover:text-white"
                 }`}
             >
               🏷️ All Types
@@ -4346,8 +4383,8 @@ function OutboundToDoQueue({
                     key={cat}
                     onClick={() => toggleCategory(cat)}
                     className={`rounded-full border px-3 py-1.5 text-[9px] font-bold transition active:scale-95 cursor-pointer flex items-center gap-1 ${isActive
-                        ? "border-cyan-400 bg-cyan-500/15 text-cyan-200 font-black shadow-[0_0_12px_rgba(6,182,212,0.12)]"
-                        : "border-white/[0.06] bg-white/[0.04] text-zinc-400 hover:bg-white/10 hover:text-white"
+                      ? "border-cyan-400 bg-cyan-500/15 text-cyan-200 font-black shadow-[0_0_12px_rgba(6,182,212,0.12)]"
+                      : "border-white/[0.06] bg-white/[0.04] text-zinc-400 hover:bg-white/10 hover:text-white"
                       }`}
                   >
                     {cat}
@@ -4374,8 +4411,8 @@ function OutboundToDoQueue({
             key={tab.key}
             onClick={() => setActiveTab(tab.key)}
             className={`flex items-center gap-1.5 rounded-xl border px-3 py-2 text-[10px] font-black uppercase tracking-wider transition active:scale-95 cursor-pointer ${activeTab === tab.key
-                ? tab.color + " shadow-md"
-                : "border-white/[0.04] bg-white/[0.02] text-zinc-500 hover:text-white"
+              ? tab.color + " shadow-md"
+              : "border-white/[0.04] bg-white/[0.02] text-zinc-500 hover:text-white"
               }`}
           >
             {tab.label}
@@ -4404,8 +4441,8 @@ function OutboundToDoQueue({
 
                   {lead.websiteStatus && (
                     <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[8px] font-black uppercase tracking-wider ${lead.websiteStatus === "No website" ? "border-red-500/30 bg-red-500/10 text-red-400" :
-                        lead.websiteStatus === "Social media only" ? "border-purple-500/30 bg-purple-500/10 text-purple-300" :
-                          "border-zinc-700 bg-zinc-800/30 text-zinc-400"
+                      lead.websiteStatus === "Social media only" ? "border-purple-500/30 bg-purple-500/10 text-purple-300" :
+                        "border-zinc-700 bg-zinc-800/30 text-zinc-400"
                       }`}>
                       {lead.websiteStatus === "No website" ? "🚫 No Web" :
                         lead.websiteStatus === "Social media only" ? "📱 Socials" : "✓ Website"}
@@ -4473,17 +4510,17 @@ function OutboundToDoQueue({
                   </button>
                 )}
 
-                {/* Skip / Not interested */}
+                {/* Delete Lead */}
                 <button
                   onClick={() => {
-                    if (confirm(`Archive ${lead.businessName}?`)) {
-                      onTriggerResolution(lead, "reschedule", "no");
+                    if (confirm(`Are you sure you want to permanently delete ${lead.businessName}? This cannot be undone.`)) {
+                      onDelete(lead.id);
                     }
                   }}
-                  className="rounded-xl border border-white/5 bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-red-400 p-2 transition active:scale-95 cursor-pointer"
-                  title="Not Interested / Archive"
+                  className="flex items-center gap-1 rounded-xl bg-red-500/10 border border-red-500/20 px-2.5 py-1.5 text-[10px] font-black text-red-400 hover:bg-red-500/20 transition active:scale-95 cursor-pointer"
+                  title="Delete Lead permanently"
                 >
-                  🗑
+                  <Trash2 size={11} /> Delete
                 </button>
               </div>
             </div>
@@ -4552,10 +4589,10 @@ function CallResolutionModal({ lead, type, preSelectOption, onClose, onResolve }
           followUpDays: days,
           customDate: cDate,
           notes: notes || `Rescheduled call: ${rescheduleType === "no_answer" ? "No answer" :
-              rescheduleType === "vm" ? "Voicemail left" :
-                rescheduleType === "busy" ? "Busy / Call back" :
-                  rescheduleType === "today" ? "Call back later today" :
-                    rescheduleType === "no" ? "Not Interested / Archive" : "Custom schedule"
+            rescheduleType === "vm" ? "Voicemail left" :
+              rescheduleType === "busy" ? "Busy / Call back" :
+                rescheduleType === "today" ? "Call back later today" :
+                  rescheduleType === "no" ? "Not Interested / Archive" : "Custom schedule"
             }.`,
         });
       }
@@ -4622,15 +4659,15 @@ function CallResolutionModal({ lead, type, preSelectOption, onClose, onResolve }
                     { key: "busy", label: "👥 Busy / Call Tomorrow", desc: "Call tomorrow" },
                     { key: "today", label: "⏳ Call Back Later Today", desc: "Call back today" },
                     { key: "custom", label: "📅 Pick a Specific Day", desc: "Choose callback date" },
-                    { key: "no", label: "🗑 Not Interested", desc: "Archive contact" },
+                    { key: "no", label: "🗑 Delete / Off List", desc: "Permanently delete from database" },
                   ].map((opt) => (
                     <button
                       key={opt.key}
                       type="button"
                       onClick={() => setRescheduleType(opt.key)}
                       className={`rounded-xl border p-2.5 text-[10px] text-left transition active:scale-95 cursor-pointer ${rescheduleType === opt.key
-                          ? "border-cyan-400 bg-cyan-400/10 text-cyan-200 font-black shadow-lg"
-                          : "border-white/[0.06] bg-white/[0.03] text-zinc-400 hover:text-white"
+                        ? "border-cyan-400 bg-cyan-400/10 text-cyan-200 font-black shadow-lg"
+                        : "border-white/[0.06] bg-white/[0.03] text-zinc-400 hover:text-white"
                         }`}
                     >
                       <span className="block font-black">{opt.label}</span>
