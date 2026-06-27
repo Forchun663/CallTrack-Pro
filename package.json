@@ -9,12 +9,16 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@capacitor/android": "^8.4.1",
+    "@capacitor/core": "^8.4.1",
+    "@capacitor/ios": "^8.4.1",
     "@supabase/supabase-js": "^2.106.2",
     "lucide-react": "^0.454.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6"
   },
   "devDependencies": {
+    "@capacitor/cli": "^7.6.7",
     "@tailwindcss/vite": "^4.3.0",
     "@vitejs/plugin-react": "^4.3.3",
     "tailwindcss": "^4.3.0",

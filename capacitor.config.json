@@ -1,0 +1,8 @@
+{
+  "appId": "com.calltrackpro.app",
+  "appName": "CallTrack Pro",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}
